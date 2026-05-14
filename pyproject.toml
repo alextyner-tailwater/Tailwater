@@ -1,0 +1,95 @@
+[build-system]
+requires      = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name            = "tailwater"
+version         = "0.1.0"
+description     = "Client + post-processing toolkit for the Tailwater Wannier-Hamiltonian inference API"
+readme          = "README.md"
+requires-python = ">=3.9"
+license         = {text = "Apache-2.0"}
+authors         = [{ name = "Tailwater" }]
+keywords        = [
+    "wannier", "tight-binding", "DFT", "GNN", "tbmodels",
+    "KPM", "surface states", "fermi arc", "topological",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+
+# Core dependencies required for every part of the package.
+# Heavy ML deps (torch, e3nn, torch_geometric) come along because the
+# subspace fine-tune path needs them. If you only want the HTTP client
+# + post-processing, set `pip install "tailwater[core]"` once we split
+# the optional extras out — for now everything ships together.
+dependencies = [
+    "numpy>=1.20",
+    "scipy>=1.7",
+    "requests>=2.28",
+    "tqdm>=4.60",
+    "matplotlib>=3.5",
+    "h5py>=3.7",
+    "pymatgen>=2023.0",
+    "tbmodels>=1.4",
+    "torch>=2.0",
+    "torch-geometric>=2.0",
+    "e3nn>=0.5",
+]
+
+[project.optional-dependencies]
+# Required only for the `tb_model.to_pb()` HDF5 -> pybinding helper.
+# Most users don't need it; install with: pip install "tailwater[pybinding]"
+pybinding = ["pybinding>=0.9"]
+
+# Required only for `torch_scatter`-using losses on some torch versions.
+# Most modern setups already ship torch_scatter alongside torch_geometric;
+# install with: pip install "tailwater[scatter]" if you hit an
+# ImportError on torch_scatter during fine-tuning.
+scatter = ["torch-scatter>=2.0"]
+
+# Required only for the `auto=True` path-generation mode of
+# `bulk_band_structure` / `BandStructure.auto`. Install with:
+#     pip install "tailwater[seekpath]"
+seekpath = ["seekpath>=2.0"]
+
+# Development tooling.
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.1",
+    "build>=1.0",
+    "twine>=4.0",
+]
+
+[project.urls]
+Homepage      = "https://github.com/tailwater/tailwater"
+Documentation = "https://github.com/tailwater/tailwater#readme"
+Issues        = "https://github.com/tailwater/tailwater/issues"
+
+# Tell setuptools to look for packages under src/.
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["tailwater*"]
+
+# Include the README as the long-description.
+[tool.setuptools.dynamic]
+readme = {file = ["README.md"], content-type = "text/markdown"}
+
+# ---- Optional: ruff configuration for `ruff check` ----
+[tool.ruff]
+line-length    = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]   # line-too-long; many of our docstrings exceed 100
