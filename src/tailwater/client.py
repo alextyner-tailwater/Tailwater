@@ -185,11 +185,10 @@ def tw_api_call(
         Hit the raw-input endpoint — no model inference runs. The .pt
         file is a dict with keys ``data`` (PyG Data object with the
         structural fields only: node_features, edge_index, edge_vectors,
-        inv_data, atom_number), ``LM``, and ``atoms``. Use this for
-        debugging the graph build, for reproducing the supplier-side
-        input on a local machine, or for offline inference where the
-        customer has their own model + heads and only needs the
-        supplier's structure-to-graph pipeline.
+        inv_data, atom_number), ``LM``, and ``atoms``. Use this to
+        inspect the parsed graph (e.g. before feeding it through your
+        own model + heads), or for offline experimentation that doesn't
+        need a full server-side inference call.
     return_graph_output : bool, default False
         Run the full model but DON'T assemble tbmodels. The .pt file
         is a dict with keys ``sparse_edge_list`` (list of [18,18]
@@ -250,9 +249,10 @@ def tw_api_call(
           symmetrize   -> {"symmed_hdf5": "...", "hdf5": "...",
                            "win": "...", "wannsymm_in": "...",
                            "wannsymm_log": "..."}
-        The `"win"` key always points at the canonical wannier90.win file
-        the server actually ran inference on — useful for debugging
-        graph-construction differences between API and notebook paths.
+        The ``"win"`` key always points at the canonical wannier90.win
+        file the server actually ran inference on — useful for
+        reproducing the exact graph the server built from your structure
+        (positions, lattice, projections) in any downstream tool.
 
     Raises
     ------

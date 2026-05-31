@@ -1,60 +1,36 @@
-"""wannier_wizard.py — surface and bulk spectral analysis on a tight-binding HDF5 file.
+"""Surface and bulk spectral analysis on a tight-binding HDF5 model.
 
-Refactored from `WannierWizard_Source.ipynb` into a clean object-oriented
-module. Four calculator classes, each constructed from an HDF5 path
-(or any tbmodels.Model in memory), each exposing a `.run()` method
-that returns a Result dataclass containing raw NumPy data PLUS
-matplotlib Figure objects:
+Four calculator classes, each constructed from an HDF5 path (or an
+in-memory ``tbmodels.Model``) and each exposing a ``.run()`` method that
+returns a Result dataclass with raw NumPy arrays plus matplotlib
+``Figure`` objects:
 
-  BulkDOS                — k-mesh-averaged DOS via KPM.
+  BulkDOS                — k-mesh-averaged density of states via KPM.
   SurfaceSpectralDensity — surface DOS along a k-path via KPM
                            (top + bottom surfaces in a single pass).
-  SurfaceGreensFunction  — surface Green's function along a k-path
-                           via the Lopez-Sancho iterative scheme.
+  SurfaceGreensFunction  — surface Green's function along a k-path via
+                           the Lopez-Sancho iterative scheme.
   FermiArcMap            — 2D Fermi-arc map at a single energy via
                            Lopez-Sancho.
 
-Optional integration with the API workflow:
+Plus two helpers for semiconductors / insulators (see the *Fermi
+alignment* guide in the docs):
 
-    from Tailwater import tb_model
-    from wannier_wizard import SurfaceGreensFunction
-    model = tb_model.load("wannier90_hr.hdf5")
+  compute_band_edges — locate VBM / CBM / gap on a uniform k-mesh.
+  align_to_vbm       — return a model shifted so the VBM sits at E = 0.
+
+Typical use::
+
+    from tailwater import tb_model, align_to_vbm, SurfaceGreensFunction
+
+    model = align_to_vbm(tb_model.load("wannier90_hr.hdf5"))
     sgf   = SurfaceGreensFunction(model, surface=np.eye(3), energies=...,
                                   k_path=..., k_labels=...)
     result = sgf.run()
     result.figure_top.savefig("top.png")
     np.savez("raw.npz", **result.as_dict())
 
-Optimizations vs the notebook
------------------------------
-* The reoriented + slab model is built ONCE in __init__ and cached on
-  the calculator instance; .run() does only per-(k, energy) compute.
-* Surface random-phase vectors for KPM are generated once at
-  construction, converted to a torch tensor, and reused across all
-  k-points (notebook regenerated them inside the constructor body,
-  which was fine but tied vector-count and surface choice to the
-  __init__ call).
-* Lopez-Sancho recursion uses torch.linalg.solve (no explicit inverse)
-  and pre-allocates the identity matrix outside the recursion body
-  so each k-point reuses a single I tensor.
-* KPM Chebyshev reconstruction is vectorized over the energy grid
-  (already in the notebook; preserved here).
-* FermiArcMap drops vestigial k-path code from the notebook and fixes
-  the bug where `fig_bot` plotted `Right_Surf` twice (top and bottom
-  panels were identical).
-
-Bug fixes carried over from notebook drift
-------------------------------------------
-* `FermiArcMap`'s bottom-surface figure now correctly plots
-  `Left_Surf` (the notebook used `Right_Surf` for both).
-* `FermiArcMap` no longer references `path` / `N_path` symbols (which
-  were left over from a copy-paste of `SurfGF` and would NameError
-  on a clean module-level run).
-
-Required dependencies
----------------------
-numpy, scipy, torch, tbmodels, matplotlib, tqdm
-(pybinding / pythtb / kwant from the original notebook are NOT needed.)
+Dependencies: numpy, scipy, torch, tbmodels, matplotlib, tqdm.
 """
 
 from __future__ import annotations
@@ -493,11 +469,33 @@ def generate_k_path(
     labels: Optional[List[str]] = None,
     rec_vecs: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Generate a k-path connecting `k_points` with ~N_path total samples.
+    """Generate a k-path connecting ``k_points`` with about ``N_path`` total samples.
 
-    See the notebook reference for details; returns (k_vec, k_dist, k_node).
-    Exposed publicly because customers often want to pre-build the path
-    and inspect it before feeding to a Surface* calculator.
+    Parameters
+    ----------
+    k_points : sequence of fractional k-vectors
+        High-symmetry nodes the path visits, in order. Path segments
+        between consecutive nodes are sampled in proportion to their
+        Cartesian length when ``rec_vecs`` is supplied, else uniformly.
+    N_path : int
+        Approximate total number of samples across all segments.
+    labels : list of str, optional
+        Display labels for the nodes (e.g. ``[r"$\\Gamma$", "K", "M"]``).
+    rec_vecs : ndarray of shape (3, 3), optional
+        Reciprocal lattice vectors. If provided, segment lengths are
+        measured in Cartesian (1/Å) space — otherwise they default to
+        fractional length, which can over/undersample anisotropic cells.
+
+    Returns
+    -------
+    k_vec : ndarray of shape (N, 3)
+        Sampled k-points along the path.
+    k_dist : ndarray of shape (N,)
+        Cumulative path length at each sample (for plotting the x-axis
+        of a band-structure figure).
+    k_node : ndarray of shape (len(k_points),)
+        Cumulative path length at each high-symmetry node (for x-tick
+        positions on a band-structure figure).
     """
     k_points = np.array(k_points)
     num_nodes = len(k_points)
@@ -1135,15 +1133,10 @@ class SurfaceGreensFunction:
 class FermiArcMap:
     """Surface spectral function at a SINGLE energy on a 2D k-grid.
 
-    Same Lopez-Sancho machinery as SurfaceGreensFunction, but the k-grid
-    is the 2D BZ slice at k_z = 0 (post-reorient), spanning [-0.5, 0.5]
-    in both k_x and k_y. Produces four matplotlib figures: raw and
-    griddata-interpolated maps for both surfaces.
-
-    Bug-fix vs the notebook
-    -----------------------
-    The notebook's `FermiArc.fig_bot` plotted `Right_Surf` (instead of
-    `Left_Surf`), so the two surface panels were identical. Fixed here.
+    Same Lopez-Sancho machinery as ``SurfaceGreensFunction``, but the
+    k-grid is the 2D BZ slice at ``k_z = 0`` (post-reorient), spanning
+    ``[-0.5, 0.5]`` in both ``k_x`` and ``k_y``. Produces four matplotlib
+    figures: raw and griddata-interpolated maps for both surfaces.
     """
 
     def __init__(
