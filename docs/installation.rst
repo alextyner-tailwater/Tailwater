@@ -22,7 +22,6 @@ by default. Install with the bracket syntax:
 
 .. code-block:: bash
 
-    pip install "tailwater[pybinding]"   # tb_model.to_pb() helper
     pip install "tailwater[scatter]"     # torch-scatter, only if missing
     pip install "tailwater[seekpath]"    # auto k-path for bulk_band_structure
     pip install "tailwater[dev]"         # pytest, ruff, build, twine
@@ -34,10 +33,6 @@ by default. Install with the bracket syntax:
    * - Extra
      - Adds
      - When you need it
-   * - ``pybinding``
-     - ``pybinding>=0.9``
-     - You call ``tb_model.load(...).to_pb()`` to convert an HDF5
-       tight-binding model into a ``pybinding.Lattice``.
    * - ``scatter``
      - ``torch-scatter>=2``
      - Your torch / torch-geometric install doesn't already ship
@@ -50,6 +45,21 @@ by default. Install with the bracket syntax:
    * - ``dev``
      - ``pytest``, ``ruff``, ``build``, ``twine``
      - You're working on ``tailwater`` itself.
+
+pybinding (separate package, not an extra)
+-------------------------------------------
+
+If you want to use ``subspace_projection`` (which writes a projected
+hr-model HDF5 after fine-tuning) or ``tb_model.load(...).to_pb()``,
+install ``pybinding-dev`` directly — it is **not** a ``tailwater`` extra,
+just a regular PyPI package:
+
+.. code-block:: bash
+
+    pip install pybinding-dev
+
+Calling those features without it installed raises a clear ``ImportError``
+that points you back at this command.
 
 Supported Python
 ----------------
@@ -67,3 +77,20 @@ Verifying the install
 
     from tailwater import tw_api_call, subspace_projection, BulkDOS
     print(tw_api_call.__doc__.splitlines()[0])
+
+
+Getting API access
+------------------
+
+By default, ``tw_api_call(...)`` talks to the hosted Tailwater API at
+**https://api.tailwater.io** — no configuration required beyond a username
+and password issued by the Tailwater team. Authentication is HTTP Basic;
+every successful inference call decrements your credit balance by one.
+
+To request an account, email the Tailwater team. To check your balance
+without spending a credit:
+
+.. code-block:: python
+
+    from tailwater import remaining_credits
+    print(remaining_credits("user", "pw"))     # -> int

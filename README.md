@@ -15,13 +15,43 @@ pip install tailwater
 Optional extras:
 
 ```bash
-pip install "tailwater[pybinding]"      # enables tb_model.to_pb()
 pip install "tailwater[scatter]"        # if torch_scatter import fails
 pip install "tailwater[seekpath]"       # enables auto k-path mode of bulk_band_structure
-pip install "tailwater[dev]"             # pytest, ruff, build, twine
+pip install "tailwater[dev]"            # pytest, ruff, build, twine
 ```
 
+If you intend to use `subspace_projection` (writes a projected hr-model HDF5)
+or `tb_model.load(...).to_pb()`, also install pybinding directly:
+
+```bash
+pip install pybinding-dev
+```
+
+`pybinding-dev` is a separate package, not a `tailwater` extra — installs the
+same way it does on its own.
+
 Tested on Python 3.9–3.12.
+
+---
+
+## API access
+
+The Tailwater inference API is hosted at **`https://api.tailwater.io`** — this
+is the default endpoint `tw_api_call(...)` talks to, so the basic usage below
+needs no extra configuration beyond your credentials.
+
+- **Credentials.** Authentication is **HTTP Basic** (username + password).
+  Email the Tailwater team to request an account; you'll be issued a username
+  and a one-time-displayed password.
+- **Billing.** Each successful inference call decrements your server-side
+  credit balance by one. Health checks (`/healthz`) and balance lookups
+  (`/credits/`) are free.
+- **Checking your balance:**
+
+  ```python
+  from tailwater import remaining_credits
+  print(remaining_credits("user", "pw"))   # -> int
+  ```
 
 ---
 
@@ -171,7 +201,6 @@ Each post-processing class accepts either an HDF5 path (`str`) or an in-memory `
 ```python
 # HTTP client + HDF5 loader
 tw_api_call(structure, user, password, output_path, filename, ...)
-TW_API(user, password, filename, structure_file_path, output_path)  # legacy
 tb_model.load(path_to_hdf5)
 remaining_credits(user, password)
 
@@ -206,6 +235,11 @@ SurfaceSpectralDensity(model_or_path, surface, LZ, energies, k_path, ...)
 SurfaceGreensFunction(model_or_path, surface, energies, k_path, thickness, NN, eps, ...)
 FermiArcMap(model_or_path, surface, energy, Nx, Ny, thickness, NN, eps, ...)
 generate_k_path(k_points, N_path, labels=None, rec_vecs=None)
+
+# Fermi / band-edge helpers (non-metals)
+compute_band_edges(model_or_path, k_mesh=(4,4,4))            # -> {"vbm","cbm","gap","is_metal"}
+align_to_vbm(model_or_path, k_mesh=(4,4,4),                  # -> new model with VBM = 0
+             fermi_level=None, if_metal="warn")
 
 # Constants
 NUM_ELEMENTS   # 109

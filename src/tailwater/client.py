@@ -2,13 +2,9 @@
 # coding: utf-8
 """Client-side helpers for hitting the Tailwater inference API.
 
-Three entry points:
+Two entry points:
 
-  TW_API(...)          — original, kept for backwards compatibility.
-                         Reads a structure file from disk, shells out
-                         to `curl` to POST it to the API.
-
-  tw_api_call(...)     — new. Accepts an in-memory pymatgen Structure
+  tw_api_call(...)     — accepts an in-memory pymatgen Structure
                          (no disk round-trip), uses `requests` for the
                          POST (proper status-code + error handling),
                          and supports five inference modes:
@@ -42,9 +38,19 @@ Three entry points:
                              into `output_path` and the function returns
                              a dict mapping artifact -> filesystem path.
 
+                           * symmetrize = True:
+                             receive a zip containing the symmetrized
+                             tbmodels HDF5 (produced by running
+                             WannSymm on the model's prediction),
+                             alongside the raw pre-symmetrization HDF5
+                             and the wannsymm input/log for provenance.
+                             Costs one credit; the server runs full
+                             inference plus a WannSymm pass.
+
                          If multiple flags are True the most expensive
                          request wins:
-                           project > return_input > return_embeddings
+                           project > symmetrize > return_input
+                                   > return_embeddings
                                    > return_graph_output > default HDF5.
 
   tb_model.load(...)   — local HDF5 loader, not an API call. Reads a
@@ -63,7 +69,6 @@ clean Python exception so calling code can react.
 
 import json
 import os
-import subprocess
 import types
 from typing import Optional, Union
 
@@ -74,43 +79,19 @@ from pymatgen.core.structure import Structure
 # tbmodels is needed by the `tb_model.load(...)` helper at the bottom of
 # this file. Pybinding is imported lazily inside `_to_pb_method` so this
 # module still imports cleanly on hosts that only need the HTTP client
-# parts (tw_api_call, TW_API).
+# parts (tw_api_call).
 import tbmodels
 
 
-# Default API location. Override via the `api_url` argument or by
-# setting the TW_API_URL environment variable before calling.
-DEFAULT_API_URL = os.environ.get("TW_API_URL", "http://127.0.0.1:8000")
+# Default API location: the production Tailwater inference API.
+# (The `api_url=` argument and the TW_API_URL env var can override this in
+# the rare case the Tailwater team points you at a different endpoint —
+# the production URL is what every normal user should hit.)
+DEFAULT_API_URL = os.environ.get("TW_API_URL", "https://api.tailwater.io")
 
 
 # =====================================================
-# LEGACY ENTRY POINT  (file-path based, uses curl)
-# =====================================================
-
-def TW_API(user, password, filename, structure_file_path, output_path):
-    """Original file-path-based client. Kept for callers that still
-    pass on-disk structure files. New code should prefer `tw_api_call`.
-    """
-    os.makedirs(output_path, exist_ok=True)
-    if os.path.exists(structure_file_path):
-        structure = Structure.from_file(structure_file_path)
-    else:
-        raise ValueError("Structure not found")
-    with open("temp_struct_file.json", "w") as f:
-        json.dump(structure.as_dict(), f, indent=2)
-    structure.to(output_path + '/Structure.cif')
-    subprocess.call(
-        'curl -u ' + str(user) + ':' + str(password)
-        + ' -X POST -F "file=@temp_struct_file.json"'
-        + ' -o ' + output_path + '/' + str(filename) + '.hdf5'
-        + ' ' + DEFAULT_API_URL + '/upload_json_process_and_download_dat/',
-        shell=True,
-    )
-    subprocess.call('rm temp_struct_file.json', shell=True)
-
-
-# =====================================================
-# NEW ENTRY POINT  (in-memory Structure, requests-based)
+# ENTRY POINT  (in-memory Structure, requests-based)
 # =====================================================
 
 # Endpoint routing for the API modes. Names come from API/RunAPI.py.
@@ -119,6 +100,7 @@ _ENDPOINT_EMBEDDINGS_PT   = "/upload_structure_and_download_embeddings/"
 _ENDPOINT_INPUT_PT        = "/upload_structure_and_download_input/"
 _ENDPOINT_GRAPH_OUTPUT_PT = "/upload_structure_and_download_graph_output/"
 _ENDPOINT_PROJECT_ZIP     = "/upload_structure_and_download_project/"
+_ENDPOINT_SYMMETRIZED_ZIP = "/upload_structure_and_download_symmetrized/"
 
 
 def tw_api_call(
@@ -131,6 +113,7 @@ def tw_api_call(
     return_input: bool = False,
     return_graph_output: bool = False,
     project: bool = False,
+    symmetrize: bool = False,
     api_url: str = DEFAULT_API_URL,
     timeout: float = 600.0,
     save_cif: bool = True,
@@ -163,6 +146,18 @@ def tw_api_call(
                                             `output_path` and a dict mapping
                                             artifact name to path is returned
                                             instead of a single string.
+      * symmetrize        = True         -> SYMMETRIZATION mode: a single
+                                            zip containing the symmetrized
+                                            HDF5 (post-WannSymm), the raw
+                                            (pre-symm) HDF5, the wannsymm.in
+                                            actually used, and the wannsymm
+                                            stdout/stderr log. One credit
+                                            per call. Use this when you
+                                            want the predicted Hamiltonian
+                                            to obey the crystal's point /
+                                            space group symmetries
+                                            exactly, as a post-processing
+                                            cleanup on top of inference.
 
     Parameters
     ----------
@@ -213,20 +208,34 @@ def tw_api_call(
             {"hdf5": "...", "embeddings": "...", "graph_output": "..."}
         Costs one credit per call regardless of how many artifacts.
         Wins over the other `return_*` flags if multiple are True.
+    symmetrize : bool, default False
+        Symmetrization mode. Server runs full inference, writes the
+        predicted Hamiltonian as `<seedname>_hr.dat`, generates a POSCAR
+        and a wannsymm.in (with projections lifted from the canonical
+        .win), invokes WannSymm, and bundles the symmetrized HDF5 +
+        raw HDF5 + wannsymm input/log into a single zip:
+            {"symmed_hdf5": "...", "hdf5": "...", "win": "...",
+             "wannsymm_in": "...", "wannsymm_log": "..."}
+        Costs one credit per call. Use this when downstream
+        post-processing (DOS, band structure, surface states) needs the
+        Hamiltonian to obey the crystal symmetries exactly. Loses to
+        `project` if both are True (project is more comprehensive).
     keep_zip : bool, default False
         When `project=True`, controls whether the downloaded .zip is
         retained after extraction. Default False (delete the zip;
         keep only the three unpacked artifacts).
     api_url : str
-        Base URL of the API. Defaults to ``$TW_API_URL`` or
-        ``http://127.0.0.1:8000``.
+        Base URL of the API. Defaults to ``https://api.tailwater.io``
+        (the production deployment). Almost no one should need to set
+        this — only pass it if the Tailwater team specifically pointed
+        you at a different endpoint.
     timeout : float
         Request timeout in seconds. Backbone inference on a 50-atom
         material is typically <60 s on CPU; the default 600 s is
         generous for batched / cold-start cases.
     save_cif : bool, default True
-        If True, also write the structure to ``{output_path}/Structure.cif``
-        (matches the legacy TW_API side effect). Set False to skip.
+        If True, also write the structure to ``{output_path}/Structure.cif``.
+        Set False to skip.
 
     Returns
     -------
@@ -238,6 +247,9 @@ def tw_api_call(
           return_graph_output -> {"graph_output": "...", "win": "..."}
           project      -> {"hdf5": "...", "embeddings": "...",
                            "graph_output": "...", "win": "..."}
+          symmetrize   -> {"symmed_hdf5": "...", "hdf5": "...",
+                           "win": "...", "wannsymm_in": "...",
+                           "wannsymm_log": "..."}
         The `"win"` key always points at the canonical wannier90.win file
         the server actually ran inference on — useful for debugging
         graph-construction differences between API and notebook paths.
@@ -259,7 +271,7 @@ def tw_api_call(
     # and no cleanup needed.
     payload_bytes = json.dumps(structure.as_dict()).encode("utf-8")
 
-    # Optional CIF dump on the client side (matches legacy TW_API).
+    # Optional CIF dump on the client side.
     if save_cif:
         try:
             structure.to(filename=os.path.join(output_path, "Structure.cif"))
@@ -269,11 +281,15 @@ def tw_api_call(
             print(f"[tw_api_call] Warning: failed to write Structure.cif: {cif_err}")
 
     # ---- Route to the right endpoint ----
-    # Priority: project > return_input > return_embeddings > return_graph_output > full HDF5.
-    # `project` wins because it's the most expensive/comprehensive request
-    # — anyone setting it explicitly is opting into the bundle workflow,
-    # so we shouldn't silently downgrade it because a leftover debug flag
-    # was also set.
+    # Priority: project > symmetrize > return_input > return_embeddings
+    #           > return_graph_output > full HDF5.
+    # `project` wins because it's the most expensive/comprehensive
+    # subspace-projection bundle. `symmetrize` sits next: it also
+    # produces a multi-artifact zip (raw + symmetrized HDF5 + the
+    # wannsymm input/log), but it's a different workflow (post-process,
+    # not fine-tune) so it never overlaps with `project` semantically.
+    # Anyone setting either flag is opting into the corresponding bundle,
+    # so we shouldn't silently downgrade.
     # The server now returns a ZIP for every endpoint — the zip bundles
     # the primary artifact alongside the canonical `input.win` file that
     # was actually parsed and run through inference. The client extracts
@@ -281,6 +297,9 @@ def tw_api_call(
     # always present).
     if project:
         endpoint        = _ENDPOINT_PROJECT_ZIP
+        primary_arcname = None       # multiple primary artifacts in this bundle
+    elif symmetrize:
+        endpoint        = _ENDPOINT_SYMMETRIZED_ZIP
         primary_arcname = None       # multiple primary artifacts in this bundle
     elif return_input:
         endpoint        = _ENDPOINT_INPUT_PT
@@ -341,11 +360,14 @@ def tw_api_call(
 
     # Map server-side arcnames -> friendly dict keys the caller sees.
     _ARCNAME_TO_KEY = {
-        "wannier90_hr.hdf5": "hdf5",
-        "embeddings.pt":     "embeddings",
-        "graph_output.pt":   "graph_output",
-        "gnn_input.pt":      "input",
-        "input.win":         "win",
+        "wannier90_hr.hdf5":         "hdf5",
+        "wannier90_symmed_hr.hdf5":  "symmed_hdf5",
+        "embeddings.pt":             "embeddings",
+        "graph_output.pt":           "graph_output",
+        "gnn_input.pt":              "input",
+        "input.win":                 "win",
+        "wannsymm.in":                "wannsymm_in",
+        "wannsymm.out":              "wannsymm_log",
     }
 
     extracted_paths = {}
@@ -373,11 +395,13 @@ def tw_api_call(
 # route.
 def remaining_credits(user: str, password: str,
                       api_url: str = DEFAULT_API_URL) -> Optional[int]:
-    """Return the current credit balance from a hypothetical GET /credits/.
+    """Return the caller's current credit balance via GET /credits/.
 
-    Returns None if the server doesn't implement this endpoint yet
-    (the current API does not). Wired here so callers can be retrofitted
-    once the route exists without code changes.
+    This is a free, read-only check — the server's /credits/ route
+    authenticates but does NOT consume a credit. Returns None if the
+    server doesn't expose the endpoint (e.g. an older deployment that
+    predates it, which answers 404) or on any non-auth error; raises
+    PermissionError on 401 (bad credentials).
     """
     try:
         response = requests.get(api_url.rstrip("/") + "/credits/",

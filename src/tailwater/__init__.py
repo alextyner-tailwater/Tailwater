@@ -3,7 +3,7 @@
 Three workflow layers:
 
 1. HTTP CLIENT — talk to the inference API
-        from tailwater import tw_api_call, TW_API
+        from tailwater import tw_api_call
         paths = tw_api_call(structure, user, password, "./out", "mat", project=True)
 
 2. SUBSPACE PROJECTION — fine-tune the output heads on supplier-provided
@@ -27,12 +27,11 @@ checkpoint (HeadsOnly.pth) and HDF5 / .pt artifacts produced by the
 API are needed.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.4.0"
 
 # ---- HTTP client + HDF5 loader ----
 from .client import (
     tw_api_call,
-    TW_API,
     tb_model,
     remaining_credits,
 )
@@ -82,6 +81,8 @@ from .wannier_wizard import (
     BandStructureResult,
     generate_k_path,
     bulk_band_structure,
+    compute_band_edges,
+    align_to_vbm,
 )
 
 # ---- Constants (rarely needed directly; exposed for advanced users) ----
@@ -91,7 +92,7 @@ from .constants import NeighBrs, NUM_ELEMENTS
 __all__ = [
     "__version__",
     # client
-    "tw_api_call", "TW_API", "tb_model", "remaining_credits",
+    "tw_api_call", "tb_model", "remaining_credits",
     # heads-only
     "HeadsOnly", "CovariantOnsiteHead", "CovariantEdgeHead",
     "load_heads_only_checkpoint", "save_heads_only_checkpoint",
@@ -110,6 +111,7 @@ __all__ = [
     "SurfaceGreensFunctionResult", "FermiArcMapResult",
     "BandStructureResult",
     "generate_k_path", "bulk_band_structure",
+    "compute_band_edges", "align_to_vbm",
     # constants
     "NeighBrs", "NUM_ELEMENTS",
 ]

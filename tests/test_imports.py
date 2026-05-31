@@ -17,13 +17,11 @@ def test_top_level_import():
 
 def test_client_exports():
     from tailwater import (
-        TW_API,
         remaining_credits,
         tb_model,
         tw_api_call,
     )
     assert callable(tw_api_call)
-    assert callable(TW_API)
     assert callable(tb_model.load)
     assert callable(remaining_credits)
 

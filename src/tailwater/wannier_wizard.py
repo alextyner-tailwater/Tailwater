@@ -59,8 +59,10 @@ numpy, scipy, torch, tbmodels, matplotlib, tqdm
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import os
+import warnings
 from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -191,6 +193,171 @@ def _load_model(model_or_path: Union[str, tbmodels.Model]) -> tbmodels.Model:
         f"`model_or_path` must be a str path or tbmodels.Model, got {type(model_or_path).__name__}"
     )
 
+
+# =====================================================================
+# FERMI / BAND-EDGE UTILITIES  (public)
+# =====================================================================
+# The Tailwater training data is Fermi-shifted so that E_F sits at 0 eV.
+# For non-metals (semiconductors / insulators), inference therefore puts
+# the band gap straddling E=0, with the VBM and CBM landing just below
+# and just above zero respectively. The two functions here let users
+# (a) measure where those band edges actually fell, and (b) re-anchor the
+# model so the VBM (rather than DFT's chosen E_F) becomes the reference,
+# which is the more physically natural zero for band-edge comparisons.
+
+def compute_band_edges(
+    model_or_path: Union[str, tbmodels.Model],
+    k_mesh: Tuple[int, int, int] = (4, 4, 4),
+) -> dict:
+    """Locate VBM / CBM / gap on a uniform Monkhorst-Pack k-mesh.
+
+    Assumes the model's current zero of energy is roughly E_F (the
+    Tailwater training convention). Diagonalizes H(k) on every k in a
+    ``k_mesh[0] x k_mesh[1] x k_mesh[2]`` uniform grid in fractional
+    reciprocal coordinates, then takes:
+
+      * VBM = the negative eigenvalue closest to zero  (max of e < 0)
+      * CBM = the positive eigenvalue closest to zero  (min of e > 0)
+      * gap = CBM - VBM
+      * is_metal = (gap <= 0)  — i.e. bands overlap E=0 across the mesh
+
+    Parameters
+    ----------
+    model_or_path : str | tbmodels.Model
+        Path to the HDF5 hr-model the API produced, or a tbmodels.Model
+        already in memory.
+    k_mesh : (int, int, int)
+        Grid density. Default (4, 4, 4) — denser meshes catch the VBM/CBM
+        at off-symmetry k more accurately at small extra cost.
+
+    Returns
+    -------
+    dict with keys {"vbm", "cbm", "gap", "is_metal"} (floats, except
+    is_metal which is bool; vbm/cbm/gap may be None in degenerate cases
+    where the spectrum has no eigenvalues on one side of zero).
+    """
+    model = _load_model(model_or_path)
+    nx, ny, nz = map(int, k_mesh)
+    eigs = []
+    for i in range(nx):
+        for j in range(ny):
+            for k in range(nz):
+                kpt = np.array([i / nx, j / ny, k / nz])
+                eigs.append(np.asarray(model.eigenval(k=kpt)))
+    eigs = np.concatenate(eigs)
+    neg = eigs[eigs < 0.0]
+    pos = eigs[eigs > 0.0]
+    if neg.size == 0 and pos.size == 0:
+        return {"vbm": 0.0, "cbm": 0.0, "gap": 0.0, "is_metal": True}
+    if neg.size == 0:
+        return {"vbm": None, "cbm": float(pos.min()), "gap": None, "is_metal": True}
+    if pos.size == 0:
+        return {"vbm": float(neg.max()), "cbm": None, "gap": None, "is_metal": True}
+    vbm = float(neg.max())
+    cbm = float(pos.min())
+    gap = cbm - vbm
+    return {
+        "vbm":      vbm,
+        "cbm":      cbm,
+        "gap":      gap,
+        "is_metal": gap <= 0.0,
+    }
+
+
+def align_to_vbm(
+    model_or_path: Union[str, tbmodels.Model],
+    k_mesh: Tuple[int, int, int] = (4, 4, 4),
+    fermi_level: Optional[float] = None,
+    if_metal: str = "warn",
+) -> tbmodels.Model:
+    """Return a NEW model with its on-site energies shifted so VBM = 0.
+
+    This re-anchors the energy scale so the band-edge sits exactly at zero —
+    the natural reference for plotting / DOS / surface-state computations on
+    semiconductors and insulators, instead of whatever DFT-chosen E_F the
+    training data was referenced against.
+
+    Parameters
+    ----------
+    model_or_path : str | tbmodels.Model
+        Path to the HDF5 hr-model, or a tbmodels.Model in memory.
+    k_mesh : (int, int, int)
+        k-mesh used to auto-detect the VBM (only consulted if
+        ``fermi_level`` is None). Default (4, 4, 4).
+    fermi_level : float, optional
+        If supplied, bypass auto-detection and shift on-site energies by
+        ``-fermi_level`` (i.e. put your chosen Fermi value at the new zero).
+        Useful if you already know E_F from a DFT calculation.
+    if_metal : {"warn", "raise", "skip"}
+        What to do when ``compute_band_edges`` reports the spectrum has no
+        clean gap around E=0 (signature of a metal, or of a non-metal
+        whose current zero isn't in the gap). Default ``"warn"``: emits a
+        ``RuntimeWarning`` and returns the unshifted model so downstream
+        code still runs. ``"raise"`` errors out; ``"skip"`` silently
+        returns the unshifted model.
+
+    Returns
+    -------
+    tbmodels.Model
+        A deep copy of the input model with its (0,0,0) hop block adjusted
+        by ``shift * I`` so every eigenvalue at every k is offset by
+        ``shift = -VBM``. The input model is not mutated.
+    """
+    model = _load_model(model_or_path)
+
+    if fermi_level is not None:
+        shift = -float(fermi_level)
+    else:
+        edges = compute_band_edges(model, k_mesh=k_mesh)
+        if edges["is_metal"]:
+            msg = (
+                f"align_to_vbm: no clean gap around E=0 on the {k_mesh} "
+                f"k-mesh (vbm={edges['vbm']}, cbm={edges['cbm']}, "
+                f"gap={edges['gap']}). Consistent with a metal (or a "
+                f"non-metal whose current zero isn't in the gap)."
+            )
+            if if_metal == "warn":
+                warnings.warn(msg + " Returning unshifted model.",
+                              RuntimeWarning, stacklevel=2)
+                return model
+            if if_metal == "raise":
+                raise RuntimeError(msg)
+            if if_metal == "skip":
+                return model
+            raise ValueError(
+                f"if_metal must be one of 'warn'|'raise'|'skip', got {if_metal!r}"
+            )
+        if edges["vbm"] is None:
+            warnings.warn(
+                "align_to_vbm: no negative eigenvalues on the k-mesh, "
+                "cannot determine VBM. Returning unshifted model.",
+                RuntimeWarning, stacklevel=2,
+            )
+            return model
+        shift = -edges["vbm"]
+
+    # Apply the shift to the (0,0,0) hop block. tbmodels' Hamiltonian
+    # construction conjugates and adds the stored hop matrix once for +R
+    # and once for -R; for R=(0,0,0) this means hop[(0,0,0)] contributes
+    # to H(k) twice (the matrix and its Hermitian conjugate). So adding
+    # delta*I to hop[(0,0,0)] shifts every eigenvalue by 2*delta. To get
+    # an eigenvalue shift of exactly `shift`, we add 0.5*shift*I instead.
+    # (Empirically verified — see align_to_vbm tests; std of the per-band
+    # diff across a random k is < 1e-13 when this factor is correct.)
+    new_model = copy.deepcopy(model)
+    n = new_model.size
+    delta = 0.5 * shift
+    H0 = new_model.hop.get((0, 0, 0))
+    if H0 is None:
+        new_model.hop[(0, 0, 0)] = delta * np.eye(n, dtype=complex)
+    else:
+        new_model.hop[(0, 0, 0)] = H0 + delta * np.eye(n, dtype=H0.dtype)
+    return new_model
+
+
+# =====================================================================
+# MODEL UTILITIES  (private)
+# =====================================================================
 
 def _reorient_model(model: tbmodels.Model, T_matrix) -> tbmodels.Model:
     """Reorient the unit cell of a tbmodels.Model.

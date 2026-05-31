@@ -1,10 +1,14 @@
 [build-system]
-requires      = ["setuptools>=61", "wheel"]
+# setuptools >=74 emits Metadata-Version 2.4 with `License-File:` headers
+# that current `pkginfo` (used by `twine check`) doesn't recognize, so
+# `twine check` flags otherwise-valid wheels. Pinning <74 keeps the
+# generated METADATA at 2.1, which both PyPI and twine accept cleanly.
+requires      = ["setuptools>=61,<74", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name            = "tailwater"
-version         = "0.1.0"
+version         = "0.4.0"
 description     = "Client + post-processing toolkit for the Tailwater Wannier-Hamiltonian inference API"
 readme          = "README.md"
 requires-python = ">=3.9"
@@ -48,9 +52,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Required only for the `tb_model.to_pb()` HDF5 -> pybinding helper.
-# Most users don't need it; install with: pip install "tailwater[pybinding]"
-pybinding = ["pybinding>=0.9"]
+# NOTE: pybinding is NOT shipped as an extra. The two functions that need it
+# (`build_hr_model` / `build_hr_model_fast`, used inside `subspace_projection`
+# to write the projected hr-model HDF5, and `tb_model.to_pb()`) raise a clear
+# ImportError telling the user to `pip install pybinding-dev`. Keeping it as
+# a separate top-level package avoids the awkward bracket-syntax install.
 
 # Required only for `torch_scatter`-using losses on some torch versions.
 # Most modern setups already ship torch_scatter alongside torch_geometric;
@@ -80,6 +86,12 @@ Issues        = "https://github.com/tailwater/tailwater/issues"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["tailwater*"]
+
+# Ship non-Python assets bundled inside the package.
+#   *.pth — the HeadsOnly_MACE.pth checkpoint that subspace_projection
+#           defaults to, so customers don't have to manage their own.
+[tool.setuptools.package-data]
+tailwater = ["*.pth"]
 
 # Include the README as the long-description.
 [tool.setuptools.dynamic]

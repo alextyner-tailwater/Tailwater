@@ -5,6 +5,13 @@ End-to-end: get a tight-binding Hamiltonian from the API, project it
 into a near-Fermi subspace, and run a surface Green's function on
 the result.
 
+.. note::
+
+   This guide assumes you have ``tailwater`` installed
+   (``pip install tailwater``) and a username/password issued by the
+   Tailwater team. The client talks to the hosted API at
+   ``https://api.tailwater.io`` automatically — no configuration needed.
+
 1. Get the artifacts from the API
 ---------------------------------
 

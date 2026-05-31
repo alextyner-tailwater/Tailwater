@@ -97,6 +97,18 @@ from .subspace_utils import (
 from .hr_export import build_hr_model_fast, write_hr_output
 
 
+# The MACE-compatible HeadsOnly checkpoint bundled with the package. Used as
+# the default starting checkpoint for `subspace_projection` so customers don't
+# have to source a HeadsOnly.pth themselves. Built from the production
+# WanE3MACE checkpoint via `API/make_heads_only.py`; the older `HeadsOnly.pth`
+# at the repo root is from the retired WanE3Lite backbone and IS NOT
+# compatible with embeddings the API now returns.
+_DEFAULT_HEADS_CHECKPOINT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "HeadsOnly_MACE.pth",
+)
+
+
 # =====================================================
 # INTERNAL HELPERS
 # =====================================================
@@ -157,7 +169,7 @@ def subspace_projection(
     graph_output_path: str,
     loss_mode: str = "subspace",
     *,
-    heads_checkpoint: str = "HeadsOnly.pth",
+    heads_checkpoint: str = None,
     kgrid_n: int = 4,
     h_mse_weight: float = 0.001,
     eig_weight: float = 1.0,
@@ -215,7 +227,12 @@ def subspace_projection(
                          `LM`, `atoms`). This is the FULL model output
                          that the projection refines toward.
     loss_mode          : "subspace" (default) | "full" | "eig_only".
-    heads_checkpoint   : starting HeadsOnly.pth.
+    heads_checkpoint   : starting HeadsOnly checkpoint (path to a .pth).
+                         Defaults to the MACE-compatible `HeadsOnly_MACE.pth`
+                         that ships inside the installed package, so you don't
+                         need to supply one for the standard workflow. Pass an
+                         explicit path only if you're starting from a
+                         custom-fine-tuned heads checkpoint.
 
     Returns
     -------
@@ -297,6 +314,9 @@ def subspace_projection(
     # =====================================================
     # LOAD HEADS + SETUP OPTIMIZER
     # =====================================================
+    if heads_checkpoint is None:
+        heads_checkpoint = _DEFAULT_HEADS_CHECKPOINT
+        print(f"[model] using packaged HeadsOnly checkpoint: {heads_checkpoint}")
     model = load_heads_only_checkpoint(heads_checkpoint,
                                        map_location=device).to(device)
     n_total = sum(p.numel() for p in model.parameters())

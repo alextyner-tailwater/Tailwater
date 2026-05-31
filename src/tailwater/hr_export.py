@@ -30,7 +30,28 @@ from typing import List, Tuple
 import numpy as np
 import torch
 import tbmodels
-import pybinding as pb
+
+# pybinding is only called inside build_hr_model / build_hr_model_fast as
+# a parallel filter that mirrors the reference notebook's semantics.
+# Most users of the package never invoke those functions — they upload a
+# structure, receive an HDF5, and post-process. So pybinding is OPTIONAL:
+# the import is lazy so `import tailwater` succeeds without it installed,
+# and a friendly error fires only when an hr_model build is actually called.
+try:
+    import pybinding as pb  # type: ignore
+except ImportError:           # pragma: no cover
+    pb = None
+
+
+def _require_pybinding() -> None:
+    """Raise a clear ImportError if pybinding isn't installed."""
+    if pb is None:
+        raise ImportError(
+            "build_hr_model / build_hr_model_fast require the `pybinding-dev` "
+            "package, which isn't installed. It's not a tailwater dependency "
+            "(install it directly): pip install pybinding-dev"
+        )
+
 
 from .constants import NeighBrs, NUM_ELEMENTS
 
@@ -78,6 +99,8 @@ def build_hr_model(edge_pred,
     -------
     hr_model : tbmodels.Model populated with on-site energies and hops.
     """
+    _require_pybinding()
+
     # ---- Normalize predictions to numpy with the expected shapes ----
     edge_pred = edge_pred.reshape((gdata.edge_index).shape[1],18,18,2)
     is_self_loop = (gdata.edge_vectors[:].norm(dim=-1) == 0)
@@ -162,6 +185,8 @@ def build_hr_model_fast(edge_pred,
     `build_hr_model`'s output as long as `pb.Lattice` /
     `tbmodels.Model.add_hop` are deterministic — both are.
     """
+    _require_pybinding()
+
     # ---- Same preprocessing as build_hr_model ----
     edge_pred = edge_pred.reshape((gdata.edge_index).shape[1], 18, 18, 2)
     is_self_loop = (gdata.edge_vectors[:].norm(dim=-1) == 0)

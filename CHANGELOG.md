@@ -1,0 +1,142 @@
+# Changelog
+
+All notable changes to the `tailwater` package. This project follows
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.4.0]
+
+### Added
+- **`compute_band_edges(model, k_mesh=(4,4,4))`** — locates VBM / CBM / gap
+  on a uniform Monkhorst-Pack k-mesh by taking `VBM = max(eigs < 0)` and
+  `CBM = min(eigs > 0)` from the model's spectrum (assuming the training
+  convention `E_F = 0`). Returns `{"vbm","cbm","gap","is_metal"}`.
+- **`align_to_vbm(model, k_mesh=(4,4,4), fermi_level=None, if_metal="warn")`**
+  — returns a deep copy of the model with on-site energies shifted by
+  `-VBM`, so the valence band maximum sits at zero. This is the natural
+  reference for band-edge plots / DOS / surface-state calculations on
+  semiconductors and insulators. Pass `fermi_level=<float>` to override
+  the auto-detected VBM with a known value. For metals (no clean gap
+  around E=0), the default `if_metal="warn"` emits a `RuntimeWarning`
+  and returns the unshifted model so downstream code still runs;
+  `"raise"` and `"skip"` are also accepted.
+
+Recommended workflow on a non-metal:
+```python
+from tailwater import tb_model, align_to_vbm, BulkDOS
+
+model = tb_model.load("wannier90_hr.hdf5")
+model = align_to_vbm(model)             # VBM is now at E=0 across all calculators
+dos   = BulkDOS(model, energies=(-3, 3), k_mesh=(8,8,8)).run()
+```
+
+
+## [0.3.2]
+
+### Changed
+- **Dropped the `[pybinding]` extra.** Customers no longer need the awkward
+  bracket-syntax install. The recommended pattern is:
+
+      pip install tailwater                # base install
+      pip install pybinding-dev            # only if you call subspace_projection or tb_model.to_pb()
+
+  `pybinding-dev` is a regular PyPI package, installed the same way it would
+  be on its own. The `ImportError` raised by `build_hr_model` /
+  `build_hr_model_fast` now points at `pip install pybinding-dev` directly.
+
+
+## [0.3.1]
+
+### Fixed
+- **Bundled `HeadsOnly_MACE.pth` now matches the production backbone.**
+  The 0.3.0 ship was built from an older `WanE3MACE.irreps_mid` (dim 820) and
+  raised `RuntimeError: Embedding dim 851 != heads' irreps_in.dim 820` when
+  fed real embeddings from the production API. Regenerated the heads from
+  the production `evMace_Epoch_51.pth` checkpoint against the current
+  `WanE3MACE` (`irreps_mid = 64x0e+64x0o+32x1o+16x1e+12x2o+25x2e+18x3o+9x3e+
+  4x4o+9x4e+4x5o+4x5e`, dim 851) so the heads' `irreps_in` lines up with
+  the embeddings the API returns. No code changes — just the bundled
+  checkpoint.
+
+
+## [0.3.0]
+
+### Added
+- **Bundled MACE-compatible HeadsOnly checkpoint.** `HeadsOnly_MACE.pth`
+  (~1.9 MB, built from the production `WanE3MACE` backbone via
+  `API/make_heads_only.py`) now ships *inside* the installed package via
+  `[tool.setuptools.package-data]`. `subspace_projection(...)` defaults to
+  loading it automatically, so customers don't have to source a HeadsOnly
+  checkpoint themselves.
+
+### Fixed
+- **`subspace_projection` was defaulting to a Lite-era heads checkpoint.**
+  Previously `heads_checkpoint: str = "HeadsOnly.pth"` looked for a file in
+  the caller's CWD that (a) usually didn't exist, or (b) if it did, was the
+  retired `WanE3Lite`-backbone checkpoint that's incompatible with the
+  embeddings the API now returns from `WanE3MACE` — leading to silently
+  wrong fine-tuned heads. The default is now `None` and resolves at
+  call time to the bundled `HeadsOnly_MACE.pth`. Pass an explicit
+  `heads_checkpoint=` only if you're starting from a custom checkpoint.
+
+
+## [0.2.2]
+
+### Fixed
+- **`pip install tailwater` (no extras) is now importable.** Previous releases
+  put `import pybinding as pb` at the top of `tailwater.hr_export`, so just
+  `import tailwater` raised `ModuleNotFoundError: No module named 'pybinding'`
+  for any user who hadn't installed the `[pybinding]` extra. The import is
+  now lazy: `import tailwater` succeeds with no extras, and a clear
+  `ImportError` (with the install hint) fires only when `build_hr_model` or
+  `build_hr_model_fast` is actually called without `pybinding` installed.
+
+  If you call those builders, install pybinding directly:
+
+      pip install pybinding-dev
+
+  Most users don't need it — they upload structures and consume the returned
+  HDF5 through `tb_model.load(...)`.
+
+
+## [0.2.1]
+
+### Docs
+- Removed every customer-facing reference to non-default API endpoints
+  from `README.md`, `docs/installation.rst`, `docs/quickstart.rst`, and the
+  `tw_api_call` docstring / `DEFAULT_API_URL` comment in `tailwater.client`.
+  The default endpoint (`https://api.tailwater.io`) is what every normal
+  user should hit, and the docs no longer suggest otherwise.
+
+### Unchanged (still supported, just not advertised)
+- The `api_url=` keyword argument on `tw_api_call(...)` and
+  `remaining_credits(...)`.
+- The `TW_API_URL` environment variable.
+
+Both remain functional for the rare case the Tailwater team points a user
+at a non-default endpoint; they're simply not surfaced in the user docs.
+
+
+## [0.2.0]
+
+### Changed
+- **Default API endpoint is now the hosted Tailwater inference API**
+  (`https://api.tailwater.io`). The client talks to it automatically — no
+  configuration needed beyond your credentials. The `api_url=` argument and
+  `TW_API_URL` environment variable remain available for the rare case the
+  Tailwater team points you at a non-default endpoint.
+
+### Removed
+- Stale `TW_API` legacy-callable reference dropped from `README.md` and
+  `docs/api/client.rst` (the symbol itself was removed in an earlier change,
+  but the doc references lingered and produced Sphinx warnings).
+
+### Docs
+- Added an "API access" section to `README.md` and a "Getting API access"
+  section to `docs/installation.rst` covering the default endpoint,
+  credentials flow (HTTP Basic, request from the Tailwater team), credit
+  metering, and how to check the balance.
+- `docs/quickstart.rst` opens with a brief "you need credentials" note.
+
+## [0.1.0]
+
+Initial release.
