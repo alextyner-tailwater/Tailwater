@@ -1074,7 +1074,7 @@ class SurfaceGreensFunction:
         iter_k = tqdm(enumerate(self.k_vec), total=Nk, desc="Surface GF") \
                  if self.verbose else enumerate(self.k_vec)
         for ik, k in iter_k:
-            Ham_np = self.slab_model._gen_ham(k)
+            Ham_np = self.slab_model.hamilton(k)
             Ham = torch.as_tensor(np.asarray(Ham_np), device=self.device, dtype=self.dtype)
 
             # Take the "interior" 2*num_wann x 2*num_wann block and the
@@ -1207,7 +1207,7 @@ class FermiArcMap:
                 PosX.append(pos[0])
                 PosY.append(pos[1])
 
-                Ham_np = self.slab_model._gen_ham(k)
+                Ham_np = self.slab_model.hamilton(k)
                 Ham = torch.as_tensor(np.asarray(Ham_np),
                                       device=self.device, dtype=self.dtype)
                 onsiteH = Ham[2 * self.num_wann:4 * self.num_wann,

@@ -3,6 +3,21 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1]
+
+### Fixed
+- **`SurfaceGreensFunction.run()` and `FermiArcMap.run()`** — both crashed with
+  `AttributeError: 'Model' object has no attribute '_gen_ham'` on every
+  `tbmodels` ≥ 1.4 install. `_gen_ham` was a private helper in an older
+  internal fork; the public, supported API is `Model.hamilton(k)`. Both
+  call sites now use `hamilton(k)`, so surface-state and Fermi-arc
+  calculations work again out of the box.
+
+If you installed `0.4.0`, upgrade with `pip install -U tailwater` — every
+other 0.4.0 feature (VBM alignment, bundled HeadsOnly checkpoint, default
+production API URL) is preserved.
+
+
 ## [0.4.0]
 
 ### Added
