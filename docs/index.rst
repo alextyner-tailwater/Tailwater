@@ -86,14 +86,19 @@ Quick start
 
 .. toctree::
    :maxdepth: 2
+   :caption: Guides
+   :hidden:
+
+   fermi_alignment
+
+
+.. toctree::
+   :maxdepth: 2
    :caption: API reference
    :hidden:
 
    api/client
-   api/heads_only
    api/finetune_heads
-   api/subspace_utils
-   api/hr_export
    api/wannier_wizard
    api/constants
 

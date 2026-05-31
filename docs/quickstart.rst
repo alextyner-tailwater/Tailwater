@@ -66,12 +66,20 @@ checkpoint, a projected (subspace-restricted) ``_hr.dat``, and a
 3. Analyze the model
 --------------------
 
+For semiconductors and insulators, anchor the energy zero to the
+valence band maximum so every calculator below shares a physically
+natural reference — see :doc:`fermi_alignment` for the full guide.
+
 .. code-block:: python
 
     import numpy as np
-    from tailwater import tb_model, SurfaceGreensFunction, BulkDOS, bulk_band_structure
+    from tailwater import (
+        tb_model, align_to_vbm,
+        SurfaceGreensFunction, BulkDOS, bulk_band_structure,
+    )
 
     model = tb_model.load(paths["hdf5"])
+    model = align_to_vbm(model)        # (optional, for non-metals) VBM -> 0
 
     # Bulk DOS (KPM, k-mesh averaged)
     dos = BulkDOS(model, k_mesh=(8, 8, 8), energies=(-4, 4)).run()

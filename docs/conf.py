@@ -36,7 +36,7 @@ copyright = f"{datetime.now().year}, {author}"
 try:
     from tailwater import __version__ as release
 except Exception:
-    release = "0.1.0"
+    release = "0.4.0"
 version = ".".join(release.split(".")[:2])
 
 

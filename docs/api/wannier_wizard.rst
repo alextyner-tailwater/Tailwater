@@ -54,3 +54,15 @@ k-path helper
 -------------
 
 .. autofunction:: tailwater.wannier_wizard.generate_k_path
+
+
+Fermi / band-edge alignment
+---------------------------
+
+For semiconductors and insulators, anchor the energy zero to the
+valence band maximum so all calculators downstream share a physically
+natural reference — see :doc:`../fermi_alignment` for the full guide.
+
+.. autofunction:: tailwater.wannier_wizard.compute_band_edges
+
+.. autofunction:: tailwater.wannier_wizard.align_to_vbm
