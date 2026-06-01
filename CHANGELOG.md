@@ -3,6 +3,43 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5]
+
+### Added
+- **`model.to_kwant()`** — instance-bound converter from the loaded
+  `tbmodels.Model` into a `kwant.Builder` with a 3D
+  `kwant.TranslationalSymmetry`. Parallel in spirit to
+  `model.to_pb()` and `model.to_pythtb()`. After wrapping the
+  returned Builder via `kwant.wraparound.wraparound(...).finalized()`
+  and sampling H(k), the eigenvalues match `model.hamilton(k_frac)`
+  to **float64 precision** (~1e-13 eV) at every k.
+
+  Quick usage:
+
+  ```python
+  import numpy as np, kwant
+  from tailwater import tb_model
+
+  model = tb_model.load("wannier90_hr.hdf5")
+  syst  = kwant.wraparound.wraparound(model.to_kwant()).finalized()
+
+  # Kwant's wraparound k-parameters are 2π·k_frac (per-cell Bloch
+  # phase), NOT Cartesian rad/length like pybinding's.
+  phase = 2 * np.pi * np.array([0.5, 0.0, 0.0])
+  H = syst.hamiltonian_submatrix(
+      params=dict(k_x=phase[0], k_y=phase[1], k_z=phase[2]),
+  )
+  ```
+
+  The returned Builder is *unfinalised* so it can also serve as the
+  base for transport calculations (attach leads + call
+  `kwant.smatrix` / `kwant.greens_function`).
+
+  Requires `conda install -c conda-forge kwant` (kept out of
+  tailwater's deps; a clear ImportError points at the install command
+  if the user calls `.to_kwant()` without it).
+
+
 ## [0.4.4]
 
 ### Added

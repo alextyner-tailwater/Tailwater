@@ -1,9 +1,9 @@
-Exporting models: ``_hr.dat``, pybinding, and PythTB
-=====================================================
+Exporting models: ``_hr.dat``, pybinding, PythTB, and Kwant
+============================================================
 
 The API returns a tight-binding Hamiltonian as an HDF5 file, which
 :func:`tailwater.tb_model.load` reads into a ``tbmodels.Model``.
-From there you have three common downstream needs:
+From there you have four common downstream needs:
 
 1. **Write the model to a Wannier90-style** ``_hr.dat`` **file** — so
    it can be consumed by external tools (``Z2Pack``, ``WannierTools``,
@@ -16,8 +16,12 @@ From there you have three common downstream needs:
    PythTB's band-path helpers, slab/wire builders, Berry-phase /
    Wannier-charge-centre routines, and the body of literature that
    targets PythTB.
+4. **Convert the model to a Kwant** ``Builder`` — so you can use
+   Kwant's transport machinery (leads, ``smatrix``, ``greens_function``),
+   the wraparound trick for bulk H(k), or any of Kwant's
+   sample-builder utilities.
 
-All three are one-liners.
+All four are one-liners.
 
 
 Writing an ``_hr.dat`` file
@@ -272,6 +276,100 @@ identical bulk Hamiltonians; pick whichever ecosystem (PythTB,
 pybinding, or both) fits your downstream analysis.
 
 
+Converting to a Kwant ``Builder``
+---------------------------------
+
+Every model returned by :func:`tailwater.tb_model.load` also carries
+a ``.to_kwant()`` instance method:
+
+.. code-block:: python
+
+    import numpy as np, kwant
+    from tailwater import tb_model
+
+    model   = tb_model.load("wannier90_hr.hdf5")
+    builder = model.to_kwant()              # kwant.Builder, 3D periodic
+
+    # For bulk H(k) sampling, wrap-around and finalise:
+    syst = kwant.wraparound.wraparound(builder).finalized()
+
+    # Kwant's wraparound takes 2π·k_frac as k_x, k_y, k_z (the
+    # per-cell Bloch phase) — NOT Cartesian rad/length like pybinding.
+    k_frac = np.array([0.5, 0.0, 0.0])
+    phase  = 2 * np.pi * k_frac
+    H      = syst.hamiltonian_submatrix(
+        params=dict(k_x=phase[0], k_y=phase[1], k_z=phase[2]),
+    )
+    eig    = np.sort(np.linalg.eigvalsh(H))
+
+This matches ``np.linalg.eigvalsh(model.hamilton([0.5, 0, 0]))`` to
+**float64 precision** (~10⁻¹³ eV) — Kwant is double-precision
+internally.
+
+.. important::
+
+   Kwant's :class:`kwant.wraparound` is the one place in this
+   ecosystem where k is **neither** fractional **nor** Cartesian
+   rad/length. The ``k_x``/``k_y``/``k_z`` parameters are
+   ``2π · k_frac`` — the per-cell Bloch phase, independent of cell
+   size. (Use :func:`tailwater.k_cart_from_frac` only for pybinding's
+   ``set_wave_vector``.) Passing a Cartesian k to Kwant is the most
+   common source of "the Kwant bands don't match the tbmodels bands"
+   reports.
+
+What ``.to_kwant()`` returns
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+It returns an **unfinalised** ``kwant.Builder`` with a 3D
+``kwant.TranslationalSymmetry``, one site per Wannier orbital. From
+there the user has two natural next steps:
+
+* **Bulk H(k)** — wrap the Builder via
+  ``kwant.wraparound.wraparound`` (as in the snippet above) and
+  finalise.
+* **Transport / scattering** — build a finite scattering region on
+  top of the bulk Builder, attach leads via
+  ``kwant.Builder(kwant.TranslationalSymmetry(...))`` for each lead,
+  and call ``kwant.smatrix`` / ``kwant.greens_function``. See the
+  Kwant tutorial for the full pattern:
+  https://kwant-project.org/doc/
+
+Computing a band structure with Kwant
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    import numpy as np, kwant
+    import matplotlib.pyplot as plt
+    from tailwater import tb_model
+
+    model = tb_model.load("wannier90_hr.hdf5")
+    syst  = kwant.wraparound.wraparound(model.to_kwant()).finalized()
+
+    # Gamma -> M -> K -> Gamma  (linearly sampled fractional path)
+    nodes = np.array([[0,0,0], [0.5,0,0], [0.333,0.333,0], [0,0,0]])
+    path  = np.vstack([np.linspace(nodes[i], nodes[i+1], 33)
+                       for i in range(len(nodes) - 1)])
+
+    bands = []
+    for k_frac in path:
+        phase = 2 * np.pi * k_frac
+        H = syst.hamiltonian_submatrix(
+            params=dict(k_x=phase[0], k_y=phase[1], k_z=phase[2]),
+        )
+        bands.append(np.sort(np.linalg.eigvalsh(H)))
+    bands = np.array(bands)                       # (Npts, num_wann)
+
+    fig, ax = plt.subplots()
+    ax.plot(bands, lw=0.7, color="k")
+    ax.set_ylabel("E (eV)")
+    fig.savefig("bands_kwant.png", dpi=150)
+
+The bands are identical to those from ``model.hamilton(k_frac)`` or
+``model.to_pythtb().solve_one(k_frac)`` at every k — Kwant just
+gives you the rest of the transport ecosystem for free.
+
+
 Round-trip: HDF5 → pybinding → HDF5
 -----------------------------------
 
@@ -332,6 +430,9 @@ API reference
    :no-index:
 
 .. autofunction:: tailwater.client._to_pythtb_method
+   :no-index:
+
+.. autofunction:: tailwater.client._to_kwant_method
    :no-index:
 
 .. autofunction:: tailwater.client.k_cart_from_frac

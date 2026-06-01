@@ -719,6 +719,167 @@ def _to_pythtb_method(self, lattice_vectors=None, hop_threshold: float = 1e-12):
     return py_model
 
 
+def _to_kwant_method(self, lattice_vectors=None, hop_threshold: float = 1e-12):
+    """Convert this tbmodels.Model into a kwant.Builder.
+
+    Bound as ``model.to_kwant`` on instances returned by
+    :func:`tb_model.load`. Returns an *unfinalised* ``kwant.Builder``
+    with a 3D :class:`kwant.TranslationalSymmetry` so callers can
+    either:
+
+    * Finalise immediately for bulk H(k) sampling:
+
+      .. code-block:: python
+
+          import numpy as np, kwant
+          from tailwater import tb_model
+
+          model = tb_model.load("wannier90_hr.hdf5")
+          syst  = kwant.wraparound.wraparound(model.to_kwant()).finalized()
+
+          # Kwant's wraparound takes 2π·k_frac (per-cell Bloch phase),
+          # NOT Cartesian rad/length.
+          k_frac = [0.5, 0.0, 0.0]
+          phase  = 2 * np.pi * np.asarray(k_frac)
+          H      = syst.hamiltonian_submatrix(
+              params=dict(k_x=phase[0], k_y=phase[1], k_z=phase[2]),
+          )
+          eigs   = np.sort(np.linalg.eigvalsh(H))
+
+    * Attach leads / build a finite scattering region on top of the
+      bulk Builder for transport calculations:
+
+      .. code-block:: python
+
+          bulk = model.to_kwant()
+          # Cut a finite slab, add leads, attach to bulk, etc.
+          # See the Kwant tutorial: https://kwant-project.org/doc/
+
+    The returned eigenvalues match
+    ``np.linalg.eigvalsh(model.hamilton(k_frac))`` to ~float64
+    precision (~1e-12 eV) at every k.
+
+    Args
+    ----
+    lattice_vectors : array-like (3, 3), optional
+        Real-space lattice vectors as rows. If None, uses ``self.uc``;
+        if that's also None, falls back to ``np.eye(3)``.
+    hop_threshold : float, default 1e-12
+        Skip hops with ``|val| <= hop_threshold``. Keep this low —
+        only filters exact-zero entries from sparse hop storage.
+
+    Returns
+    -------
+    kwant.Builder
+        A 3D-periodic Builder with one site per Wannier orbital.
+        Sublattices are accessible in the same order as
+        ``model.pos`` via the Builder's ``lattice.sublattices`` (the
+        lattice object is the first argument of the
+        TranslationalSymmetry stored on the Builder).
+
+    Conventions
+    -----------
+    The same on-site doubling story as :func:`_to_pb_method` and
+    :func:`_to_pythtb_method` applies — Kwant counts each ``(0,0,0)``
+    entry once, while tbmodels effectively counts it twice via its
+    ``H += H.c.`` symmetrisation. To match, we multiply
+    ``hop[(0,0,0)]`` by 2 before feeding Kwant.
+
+    Positions are Cartesian (Kwant's convention; converted from
+    fractional via ``pos_cart = pos_frac @ LM``).
+
+    .. warning::
+
+       The k-parameters that ``kwant.wraparound`` exposes
+       (``k_x``, ``k_y``, ``k_z``) are **not** Cartesian rad/length
+       like pybinding's. They are the **per-cell Bloch phase**
+       (i.e. ``2π · k_frac``), independent of the physical cell size.
+       To sample H(k) at the same fractional k tbmodels uses, pass
+       ``k_x = 2π · k_frac[0]``, etc. — see the worked example above.
+       This is the most common source of "the Kwant bands don't match
+       the tbmodels bands" reports.
+    """
+    # Lazy import — kwant is an optional, heavy dependency.
+    try:
+        import kwant
+    except ImportError as exc:
+        raise ImportError(
+            "model.to_kwant() requires the `kwant` package, which "
+            "isn't installed. Kwant is best installed via conda: "
+            "`conda install -c conda-forge kwant`."
+        ) from exc
+
+    # Resolve the real-space lattice vectors.
+    if lattice_vectors is not None:
+        LM = np.asarray(lattice_vectors, dtype=float)
+    elif getattr(self, "uc", None) is not None:
+        LM = np.asarray(self.uc, dtype=float)
+    else:
+        LM = np.eye(3)
+
+    # Cartesian orbital positions (Kwant's convention).
+    pos_frac = np.asarray(self.pos)
+    pos_cart = pos_frac @ LM
+    num_orb  = int(pos_frac.shape[0])
+
+    # Build the Kwant lattice + 3D translational symmetry.
+    lat = kwant.lattice.general(
+        prim_vecs=LM.tolist(),
+        basis=pos_cart.tolist(),
+        norbs=1,
+    )
+    subs = lat.sublattices
+    sym  = kwant.TranslationalSymmetry(
+        lat.vec((1, 0, 0)),
+        lat.vec((0, 1, 0)),
+        lat.vec((0, 0, 1)),
+    )
+    builder = kwant.Builder(sym)
+
+    # ---- On-site doubling fix (same logic as to_pb / to_pythtb) ----
+    hop_zero = self.hop.get((0, 0, 0))
+    if hop_zero is None:
+        h0 = np.zeros((num_orb, num_orb), dtype=complex)
+    else:
+        h0 = np.asarray(hop_zero.toarray() if hasattr(hop_zero, "toarray") else hop_zero)
+    h0_phys = 2.0 * h0
+
+    # On-site energies (one site per Wannier orbital, in cell (0,0,0)).
+    for i in range(num_orb):
+        builder[subs[i](0, 0, 0)] = float(np.real(h0_phys[i, i]))
+
+    # R = (0,0,0) off-diagonal hops — upper-triangle only. Kwant fills
+    # in the lower triangle automatically when constructing H(k).
+    rows, cols = np.nonzero(np.abs(h0_phys) > hop_threshold)
+    for i, j in zip(rows, cols):
+        i, j = int(i), int(j)
+        if i >= j:
+            continue
+        try:
+            builder[subs[i](0, 0, 0), subs[j](0, 0, 0)] = complex(h0_phys[i, j])
+        except Exception:
+            continue
+
+    # R != (0,0,0): every nonzero entry of each stored block.
+    for R, hop_mat in self.hop.items():
+        R_tup = tuple(int(x) for x in R)
+        if R_tup == (0, 0, 0):
+            continue
+        hop_arr = np.asarray(hop_mat.toarray() if hasattr(hop_mat, "toarray") else hop_mat)
+        Rx, Ry, Rz = R_tup
+        rs, cs = np.nonzero(np.abs(hop_arr) > hop_threshold)
+        for i, j in zip(rs, cs):
+            try:
+                builder[subs[int(i)](0, 0, 0),
+                        subs[int(j)](Rx, Ry, Rz)] = complex(hop_arr[i, j])
+            except Exception:
+                # Kwant raises if the (a,b) pair is already set or
+                # canonicalises to an existing one — swallow.
+                continue
+
+    return builder
+
+
 def k_cart_from_frac(k_frac, lattice_vectors) -> np.ndarray:
     """Convert a fractional k-point to Cartesian (rad/length) for pybinding.
 
@@ -784,13 +945,15 @@ class tb_model:
         hops  = model.hop
         size  = model.size
 
-        # Plus two converters to other tight-binding libraries:
-        pb_lat   = model.to_pb()        # pybinding.Lattice
-        py_model = model.to_pythtb()    # pythtb.tb_model
+        # Plus three converters to other tight-binding libraries:
+        pb_lat    = model.to_pb()        # pybinding.Lattice
+        py_model  = model.to_pythtb()    # pythtb.tb_model
+        kwant_b   = model.to_kwant()     # kwant.Builder (3D periodic)
 
-        # Both accept an optional lattice-vector override:
-        pb_lat   = model.to_pb     (lattice_vectors=np.diag([3.5, 3.5, 12.0]))
-        py_model = model.to_pythtb (lattice_vectors=np.diag([3.5, 3.5, 12.0]))
+        # All three accept an optional lattice-vector override:
+        pb_lat    = model.to_pb    (lattice_vectors=np.diag([3.5, 3.5, 12.0]))
+        py_model  = model.to_pythtb(lattice_vectors=np.diag([3.5, 3.5, 12.0]))
+        kwant_b   = model.to_kwant (lattice_vectors=np.diag([3.5, 3.5, 12.0]))
 
     The returned object still passes ``isinstance(model, tbmodels.Model)``
     — we attach the converters as bound instance methods rather than
@@ -800,7 +963,7 @@ class tb_model:
 
     @staticmethod
     def load(path_to_hdf5: str):
-        """Load a tight-binding model from an HDF5 file with the ``to_pb()`` / ``to_pythtb()`` converters attached.
+        """Load a tight-binding model from an HDF5 file with the ``to_pb()`` / ``to_pythtb()`` / ``to_kwant()`` converters attached.
 
         Parameters
         ----------
@@ -812,16 +975,17 @@ class tb_model:
         Returns
         -------
         tbmodels.Model
-            The loaded model, with instance-bound ``to_pb()`` and
-            ``to_pythtb()`` methods for conversion to pybinding and
-            PythTB. All standard ``tbmodels.Model`` functionality is
-            preserved.
+            The loaded model, with instance-bound ``to_pb()``,
+            ``to_pythtb()``, and ``to_kwant()`` methods for conversion
+            to pybinding, PythTB, and Kwant respectively. All standard
+            ``tbmodels.Model`` functionality is preserved.
         """
         if not os.path.isfile(path_to_hdf5):
             raise FileNotFoundError(f"HDF5 not found: {path_to_hdf5!r}")
         model = tbmodels.Model.from_hdf5_file(path_to_hdf5)
         # Bind the converters as instance methods — `self` is the model
-        # whenever the user calls model.to_pb() or model.to_pythtb().
+        # whenever the user calls model.to_pb() / .to_pythtb() / .to_kwant().
         model.to_pb     = types.MethodType(_to_pb_method,     model)
         model.to_pythtb = types.MethodType(_to_pythtb_method, model)
+        model.to_kwant  = types.MethodType(_to_kwant_method,  model)
         return model

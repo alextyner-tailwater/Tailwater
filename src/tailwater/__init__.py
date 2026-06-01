@@ -21,10 +21,11 @@ Three workflow layers:
         result = SurfaceGreensFunction(model, ...).run()
         result.figure_top.savefig(...)
 
-   The loaded model also carries two converters to other tight-binding
+   The loaded model also carries three converters to other tight-binding
    libraries — ``model.to_pb()`` for pybinding (use with
-   ``k_cart_from_frac`` for k conversion) and ``model.to_pythtb()`` for
-   PythTB (fractional k natively).
+   ``k_cart_from_frac`` for k conversion), ``model.to_pythtb()`` for
+   PythTB (fractional k natively), and ``model.to_kwant()`` for Kwant
+   (use ``2π·k_frac`` with the wraparound ``k_x/k_y/k_z`` params).
 
 The package is self-contained — it does NOT require the proprietary
 backbone weights or training code. Only the customer-shippable head
@@ -32,7 +33,7 @@ checkpoint (HeadsOnly.pth) and HDF5 / .pt artifacts produced by the
 API are needed.
 """
 
-__version__ = "0.4.4"
+__version__ = "0.4.5"
 
 # ---- HTTP client + HDF5 loader ----
 from .client import (
