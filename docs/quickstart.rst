@@ -100,3 +100,14 @@ natural reference — see :doc:`fermi_alignment` for the full guide.
     fig = bulk_band_structure(model, auto=True, structure=structure,
                               spacing=0.02, e_range=(-3, 3))
     fig.savefig("bands.png")
+
+    # 2D Fermi-arc / constant-energy surface map at E = 0
+    # See :doc:`fermi_arcs` for the full guide.
+    from tailwater import FermiArcMap
+    arc = FermiArcMap(
+        model, surface=np.eye(3),
+        energy=0.0, Nx=40, Ny=40,
+        thickness=6, NN=5, eps=0.005,
+        n_jobs=-1,
+    ).run()
+    arc.figure_top_interpolated.savefig("fermi_arc_top.png")

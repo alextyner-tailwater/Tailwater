@@ -24,6 +24,10 @@ dataclass with raw NumPy arrays AND matplotlib Figures.
    :members:
    :show-inheritance:
 
+   See :doc:`../fermi_arcs` for a worked Bi\ :sub:`2`\ Se\ :sub:`3`
+   example, surface-basis guidance, and tips for choosing the energy
+   and grid resolution.
+
 .. autoclass:: tailwater.wannier_wizard.BandStructure
    :members:
    :show-inheritance:

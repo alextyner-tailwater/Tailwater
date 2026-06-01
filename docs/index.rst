@@ -93,6 +93,7 @@ Quick start
    :hidden:
 
    fermi_alignment
+   fermi_arcs
    performance
 
 
