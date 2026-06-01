@@ -94,6 +94,7 @@ Quick start
 
    fermi_alignment
    fermi_arcs
+   exporting_models
    performance
 
 
@@ -104,6 +105,7 @@ Quick start
 
    api/client
    api/finetune_heads
+   api/hr_export
    api/wannier_wizard
    api/constants
 
