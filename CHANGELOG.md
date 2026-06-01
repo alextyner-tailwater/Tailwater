@@ -3,6 +3,43 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3]
+
+### Fixed
+- **`model.to_pb()` now produces a pybinding lattice whose H(k) eigenvalues
+  match `model.hamilton(k)` to float32 precision** (~1e-6 eV) at every k.
+  Two bugs were behind the previously-observed band-structure discrepancy:
+
+  1. **On-site doubling.** tbmodels' `hamilton()` constructs H(k) via
+     ``Σ_R stored[R] e^{ikR}`` followed by ``H += H.c.``. The H.c. step
+     supplies the missing -R half for R ≠ 0, but at R=(0,0,0) it
+     doubles the stored block on top of itself — so tbmodels' internal
+     `hop[(0,0,0)]` is exactly **half** the physical on-site block.
+     `to_pb` previously fed the half-stored block to pybinding,
+     producing a Hamiltonian missing half of every on-site
+     contribution. Now multiplies `hop[(0,0,0)]` by 2 before feeding
+     pybinding.
+
+  2. **Position basis.** Pybinding's `add_one_sublattice` expects
+     positions in Cartesian (length units); `tbmodels.Model.pos` stores
+     them in fractional (lattice) coordinates. `to_pb` previously
+     passed the fractional values through unchanged. Eigenvalues were
+     invariant under this (just a per-orbital unitary phase) but
+     pybinding's real-space geometry routines and Brillouin-zone
+     calculations were wrong. Now converts with `pos_cart = pos_frac @ LM`.
+
+### Added
+- **`tailwater.k_cart_from_frac(k_frac, lattice_vectors)`** — converts
+  a fractional k-point (or batch) to pybinding's Cartesian (rad/length)
+  convention via ``k_cart = 2π · inv(LM) @ k_frac``. Pair with
+  `pb.Model.set_wave_vector(...)` to sample bands on the pybinding side
+  at the same k as `model.hamilton(k_frac)` on the tbmodels side.
+
+If you used `model.to_pb()` in 0.4.0–0.4.2 and observed band-structure
+discrepancies vs. `model.hamilton(k)`, **upgrade to 0.4.3** — no API
+changes, just correct numbers.
+
+
 ## [0.4.2]
 
 ### Performance

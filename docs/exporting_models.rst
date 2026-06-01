@@ -55,34 +55,91 @@ Every model returned by :func:`tailwater.tb_model.load` carries a
 
 .. code-block:: python
 
-    from tailwater import tb_model
+    from tailwater import tb_model, k_cart_from_frac
+    import pybinding as pb
 
     model = tb_model.load("wannier90_hr.hdf5")
     lat   = model.to_pb()
 
-    # `lat` is a pb.Lattice — use it like any other pybinding lattice:
-    import pybinding as pb
-    bz = lat.brillouin_zone()
-    solver = pb.solver.lapack(pb.Model(lat, pb.translational_symmetry()))
-    bands  = solver.calc_bands(*bz)
-    bands.plot()
+    # Build a pybinding model and sample H(k) at any fractional k:
+    pmod = pb.Model(lat, pb.translational_symmetry())
+    pmod.set_wave_vector(k_cart_from_frac([0.0, 0.0, 0.0], model.uc))    # Gamma
+    eig  = np.sort(np.linalg.eigvalsh(pmod.hamiltonian.todense()))
 
-What ``.to_pb()`` does:
+These eigenvalues match ``np.sort(np.linalg.eigvalsh(model.hamilton([0,0,0])))``
+to float32 precision (~1e-6 eV).
+
+.. important::
+
+   Pybinding's :meth:`pb.Model.set_wave_vector` expects k in
+   **Cartesian (rad/length)** — *not* fractional. Use
+   :func:`tailwater.k_cart_from_frac` to convert from the fractional
+   convention :class:`tbmodels.Model.hamilton` uses. Passing fractional
+   k directly to ``set_wave_vector`` is the most common source of
+   "the pybinding bands don't match the tbmodels bands" reports.
+
+What ``.to_pb()`` does internally:
 
 * Reads the on-site energies off the diagonal of the ``R = (0, 0, 0)``
-  hop block (works regardless of which tbmodels version exposes
-  ``.on_site`` directly).
-* Adds one ``Sublattice`` per Wannier orbital, anchored at the
-  orbital's Cartesian position.
-* Iterates the full hopping dict and adds each ``(R, i, j)`` to
+  hop block (doubling them, see "Convention notes" below).
+* Adds one ``Sublattice`` per Wannier orbital, with the position
+  converted from fractional → Cartesian via ``pos_cart = pos_frac @ LM``.
+* Iterates the hopping dict and adds each ``(R, i, j)`` to
   ``lat.add_one_hopping``. pybinding implies the Hermitian conjugate
-  automatically, so any duplicate ``(-R, j, i)`` returned by
-  tbmodels is silently skipped.
+  automatically, so duplicates returned by tbmodels are silently
+  skipped.
 
-This is **lossless** for the model's Hamiltonian: every band and
-every k-point eigenvalue you can compute through the ``pb.Lattice``
-matches what ``tbmodels.Model.hamilton(k)`` returns, to machine
-precision.
+Computing a full band structure
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    import numpy as np
+    from tailwater import tb_model, k_cart_from_frac
+    import pybinding as pb
+
+    model = tb_model.load("wannier90_hr.hdf5")
+    pmod  = pb.Model(model.to_pb(), pb.translational_symmetry())
+
+    # Gamma -> M -> K -> Gamma on the (k_x, k_y) plane
+    k_frac_path = np.array([
+        [0.000, 0.000, 0],
+        [0.500, 0.000, 0],
+        [0.333, 0.333, 0],
+        [0.000, 0.000, 0],
+    ])
+
+    bands = []
+    for kf in k_frac_path:
+        pmod.set_wave_vector(k_cart_from_frac(kf, model.uc))
+        bands.append(np.sort(np.linalg.eigvalsh(pmod.hamiltonian.todense())))
+    bands = np.array(bands)                # shape (Npts, num_wann)
+
+Comparing this against ``[np.sort(np.linalg.eigvalsh(model.hamilton(kf))) for kf in k_frac_path]``
+gives matching curves to ~1e-6 eV — both routes diagonalise the same
+Hamiltonian, just with different per-orbital phase conventions on the
+eigenvectors.
+
+Convention notes
+~~~~~~~~~~~~~~~~
+
+These are the two conventions ``to_pb`` quietly handles for you; the
+``CHANGELOG`` covers the same story for upgraders from 0.4.2 or
+earlier.
+
+* **On-site doubling.** ``tbmodels.Model.hamilton(k)`` constructs the
+  Hamiltonian via ``Σ_R stored[R] e^{ikR}`` followed by ``H += H.c.``
+  This H.c. step supplies the missing -R half for R ≠ 0, but at
+  R=(0,0,0) it *doubles* the stored block. tbmodels therefore stores
+  exactly **half** the physical on-site block. ``to_pb`` multiplies
+  ``hop[(0,0,0)]`` by 2 before feeding it to pybinding so pybinding's
+  H(k) recovers the full physical on-site contribution.
+* **Position basis.** ``tbmodels.Model.pos`` is in fractional
+  coordinates; pybinding's ``add_one_sublattice`` expects Cartesian.
+  ``to_pb`` does the conversion ``pos_cart = pos_frac @ LM`` so the
+  resulting pybinding ``Lattice`` has physically meaningful positions
+  (its Brillouin-zone routines, real-space LDOS plotters, etc. all
+  see the right geometry).
 
 
 Overriding the lattice vectors

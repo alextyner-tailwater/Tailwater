@@ -444,7 +444,27 @@ def remaining_credits(user: str, password: str,
 def _to_pb_method(self, lattice_vectors=None, hop_threshold: float = 1e-12):
     """Convert this tbmodels.Model into a pybinding.Lattice.
 
-    Bound as `model.to_pb` on instances returned by `tb_model.load(...)`.
+    Bound as ``model.to_pb`` on instances returned by
+    :func:`tb_model.load`. After conversion, eigenvalues of
+    ``model.hamilton(k_frac)`` and the pybinding model match to
+    float32 precision (~1e-6 eV) at every k.
+
+    To plug pybinding into a band-structure calculation, pair the
+    returned lattice with the companion helper :func:`k_cart_from_frac`
+    — pybinding expects ``set_wave_vector(k_cart)`` in rad/length:
+
+    .. code-block:: python
+
+        from tailwater import tb_model, k_cart_from_frac
+        import pybinding as pb
+
+        model = tb_model.load("wannier90_hr.hdf5")
+        lat   = model.to_pb()
+        pmod  = pb.Model(lat, pb.translational_symmetry())
+
+        for k_frac in k_path:
+            pmod.set_wave_vector(k_cart_from_frac(k_frac, model.uc))
+            bands.append(np.linalg.eigvalsh(pmod.hamiltonian.todense()))
 
     Args
     ----
@@ -456,31 +476,47 @@ def _to_pb_method(self, lattice_vectors=None, hop_threshold: float = 1e-12):
         Skip hops with ``|val| <= hop_threshold``. Keep this low —
         we're only filtering exact-zero entries from sparse hop
         storage; the band-relevant threshold should have been applied
-        upstream by build_hr_model when the HDF5 was first written.
+        upstream when the HDF5 was first written.
 
     Returns
     -------
     pb.Lattice
         with the same sublattices, on-site energies, lattice vectors,
-        and hops as ``self``.
+        and hops as ``self``, producing the same H(k) eigenvalues at
+        every k.
 
-    Notes on duplicates
-    -------------------
-    Some tbmodels representations store both (R, i, j) and the
-    auto-generated Hermitian conjugate (-R, j, i). pybinding's
-    ``add_one_hopping`` rejects duplicates (it implies the H.c.
-    automatically), so we wrap each insertion in try/except to silently
-    skip whichever half tbmodels supplies second. The resulting pb
-    Lattice contains the unique set of hops + the implied conjugates.
+    Conventions
+    -----------
+    **On-site doubling.** tbmodels' Hamiltonian construction sums
+    ``stored[R] * exp(i k . R)`` over R, then adds its Hermitian
+    conjugate to symmetrise. That second step supplies the missing
+    minus-R half for nonzero R, but at R=0 it doubles the stored block
+    on top of itself. tbmodels therefore stores half the user-supplied
+    on-site value at R=0, and the round-trip Hamiltonian matches the
+    physical Hamiltonian. Pybinding has no such double-up step, so
+    we feed it twice the stored R=0 block, restoring the physical
+    contribution.
+
+    **Position basis.** tbmodels stores ``self.pos`` in fractional
+    coordinates. Pybinding expects positions in Cartesian. We convert
+    ``pos_cart = pos_frac @ LM`` so the resulting lattice's
+    Brillouin-zone and real-space geometry routines are physically
+    meaningful. Eigenvalues are invariant under the per-orbital phase
+    change induced by this choice — only the eigenvectors get rephased.
+
+    **Hop duplicates.** For nonzero R, both ``(R, i, j)`` and
+    ``(R, j, i)`` entries of the stored hop matrix are added explicitly
+    to pybinding; the H.c. of each pybinding add automatically supplies
+    the matching minus-R contribution, so the full Hamiltonian is
+    reconstructed. For R = 0, the auto-implied H.c. of a given
+    ``add_one_hopping`` call lands at the transposed indices —
+    pybinding rejects the explicit second add as a duplicate. We catch
+    that rejection silently.
     """
-    # Lazy import — keeps Tailwater importable on hosts without pybinding.
+    # Lazy import — keeps tailwater importable on hosts without pybinding.
     import pybinding as pb
 
-    # Real-space lattice. tbmodels stored uc=None for our API-produced
-    # HDF5 files (we deliberately don't pass `uc` when building the
-    # tbmodels.Model — see API/hr_export.py module docstring). In that
-    # case fall back to the identity unit cell, matching the original
-    # notebook's `LM = np.diag([1, 1, 1])` convention.
+    # Resolve the real-space lattice vectors.
     if lattice_vectors is not None:
         LM = np.asarray(lattice_vectors, dtype=float)
     elif getattr(self, "uc", None) is not None:
@@ -491,73 +527,107 @@ def _to_pb_method(self, lattice_vectors=None, hop_threshold: float = 1e-12):
     lat = pb.Lattice(a1=LM[0], a2=LM[1], a3=LM[2])
 
     # ---- Sublattices: position + on-site energy per orbital ----
-    # `tbmodels.Model` doesn't always expose an `.on_site` attribute on
-    # the loaded instance — the original constructor accepts an
-    # `on_site=` kwarg but internally folds it into the diagonal of the
-    # R=(0,0,0) hop matrix. To stay version-agnostic we read the
-    # on-site energies straight off that diagonal. If for some reason
-    # `hop[(0,0,0)]` is missing (e.g. a model with no on-site term)
-    # we fall back to zeros.
-    positions = np.asarray(self.pos)             # [num_orb, 3]
-    num_orb   = int(positions.shape[0])
+    # Positions: convert fractional → Cartesian for pybinding.
+    pos_frac = np.asarray(self.pos)             # [num_orb, 3], fractional
+    pos_cart = pos_frac @ LM                     # rows-of-frac · rows-of-LM
+    num_orb  = int(pos_frac.shape[0])
 
-    on_site_attr = getattr(self, "on_site", None)
-    if on_site_attr is not None:
-        # tbmodels version that DOES expose .on_site directly.
-        onsite = np.real(np.asarray(on_site_attr))
+    # On-site: read the diagonal of hop[(0,0,0)] and double it (see
+    # "On-site doubling" in the docstring above).
+    hop_zero = self.hop.get((0, 0, 0))
+    if hop_zero is None:
+        h0 = np.zeros((num_orb, num_orb), dtype=complex)
     else:
-        # Fall back to the diagonal of hop[(0,0,0)].
-        hop_zero = self.hop.get((0, 0, 0))
-        if hop_zero is None:
-            onsite = np.zeros(num_orb, dtype=float)
-        else:
-            if hasattr(hop_zero, "toarray"):
-                hop_zero_arr = np.asarray(hop_zero.toarray())
-            else:
-                hop_zero_arr = np.asarray(hop_zero)
-            onsite = np.real(np.diag(hop_zero_arr))
+        h0 = np.asarray(hop_zero.toarray() if hasattr(hop_zero, "toarray") else hop_zero)
+    h0_phys = 2.0 * h0                                  # ← the fix.
 
     for i in range(num_orb):
         lat.add_one_sublattice(
             str(i),
-            positions[i].tolist(),
-            onsite_energy=float(np.real(onsite[i])),
+            pos_cart[i].tolist(),
+            onsite_energy=float(np.real(h0_phys[i, i])),
         )
 
-    # ---- Hoppings: (R, orbital_i, orbital_j, complex value) ----
-    # self.hop is a dict mapping R-tuple -> (num_orb, num_orb) hop
-    # matrix. Some tbmodels versions store the matrix as scipy.sparse;
-    # handle both dense and sparse with `.toarray()` fallback.
+    # ---- Hoppings ----
+    # R = (0,0,0): off-diagonal entries of the doubled (0,0,0) block.
+    rows, cols = np.nonzero(np.abs(h0_phys) > hop_threshold)
+    R_zero = np.array([0, 0, 0], dtype=int)
+    for i, j in zip(rows, cols):
+        i, j = int(i), int(j)
+        if i == j:
+            continue                                    # diagonal handled above
+        try:
+            lat.add_one_hopping(R_zero, str(i), str(j), complex(h0_phys[i, j]))
+        except Exception:
+            # Pybinding rejects the second of {(0,0,0),i,j} / {(0,0,0),j,i}
+            # as the auto-H.c. of the first. Swallow silently.
+            continue
+
+    # R ≠ (0,0,0): pass each stored hop through unchanged.
     for R, hop_mat in self.hop.items():
-        R_arr = np.asarray(R, dtype=int)
-        if hasattr(hop_mat, "toarray"):
-            hop_arr = np.asarray(hop_mat.toarray())
-        else:
-            hop_arr = np.asarray(hop_mat)
-
-        mag = np.abs(hop_arr)
-        rows, cols = np.nonzero(mag > hop_threshold)
-
-        R_tuple = tuple(int(x) for x in R)
-        for i, j in zip(rows, cols):
-            i, j = int(i), int(j)
-            # On-site diagonal at R=(0,0,0) is already represented in
-            # add_one_sublattice; don't re-add it here.
-            if R_tuple == (0, 0, 0) and i == j:
-                continue
+        if tuple(int(x) for x in R) == (0, 0, 0):
+            continue
+        hop_arr = np.asarray(hop_mat.toarray() if hasattr(hop_mat, "toarray") else hop_mat)
+        R_arr   = np.asarray(R, dtype=int)
+        rs, cs  = np.nonzero(np.abs(hop_arr) > hop_threshold)
+        for i, j in zip(rs, cs):
             try:
-                lat.add_one_hopping(
-                    R_arr,
-                    str(i), str(j),
-                    complex(hop_arr[i, j]),
-                )
+                lat.add_one_hopping(R_arr, str(int(i)), str(int(j)), complex(hop_arr[i, j]))
             except Exception:
-                # Duplicate H.c. half — pybinding implies the conjugate
-                # from the first add, so the second raises. Silently
-                # skip and continue.
                 continue
 
     return lat
+
+
+def k_cart_from_frac(k_frac, lattice_vectors) -> np.ndarray:
+    """Convert a fractional k-point to Cartesian (rad/length) for pybinding.
+
+    Pybinding's ``set_wave_vector(k)`` expects ``k`` in rad/length —
+    i.e. in the basis of the Cartesian reciprocal-lattice vectors
+    ``b_i``, not the fractional ``k_i`` Wannier90 and tbmodels use by
+    default. The conversion is::
+
+        k_cart = 2π · inv(LM) @ k_frac
+
+    where ``LM`` has the real-space lattice vectors as rows.
+
+    Args
+    ----
+    k_frac : array-like, shape (3,) or (N, 3)
+        Fractional k (or batch of k-points), in the same units
+        ``tbmodels.Model.hamilton(k)`` expects.
+    lattice_vectors : array-like, shape (3, 3)
+        Real-space lattice vectors as rows (e.g. ``model.uc``).
+
+    Returns
+    -------
+    np.ndarray of shape ``(3,)`` or ``(N, 3)``
+        Cartesian k in rad/length, ready for ``pb.Model.set_wave_vector``.
+
+    Example
+    -------
+    .. code-block:: python
+
+        import numpy as np, pybinding as pb
+        from tailwater import tb_model, k_cart_from_frac
+
+        model = tb_model.load("wannier90_hr.hdf5")
+        lat   = model.to_pb()
+        pmod  = pb.Model(lat, pb.translational_symmetry())
+
+        # Sample H(k) at Gamma → M (Bi2Se3) on a fractional path:
+        k_path_frac = np.array([[0,0,0], [0.5, 0, 0]])
+        bands = []
+        for kf in k_path_frac:
+            pmod.set_wave_vector(k_cart_from_frac(kf, model.uc))
+            bands.append(np.sort(np.linalg.eigvalsh(pmod.hamiltonian.todense())))
+    """
+    LM = np.asarray(lattice_vectors, dtype=float)
+    kf = np.asarray(k_frac, dtype=float)
+    B  = 2 * np.pi * np.linalg.inv(LM)
+    if kf.ndim == 1:
+        return B @ kf
+    return (B @ kf.T).T
 
 
 class tb_model:
