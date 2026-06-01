@@ -169,6 +169,7 @@ Worked patterns
         energies=np.linspace(-0.5, +0.5, 201),     # ±0.5 eV around the VBM
         k_path=[[0, 0.5, 0], [0, 0, 0], [0.333, 0.333, 0]],
         k_labels=["M", r"$\Gamma$", "K"],
+        n_jobs=-1,                                 # see :doc:`performance`
     ).run()
     sgf.figure_top.savefig("surface_top.png")
 

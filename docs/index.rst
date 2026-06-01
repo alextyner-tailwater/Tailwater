@@ -62,7 +62,9 @@ Quick start
         graph_output_path=paths["graph_output"],
     )
 
-    # 3) Surface Green's function (Lopez-Sancho)
+    # 3) Surface Green's function (Lopez-Sancho).
+    #    n_jobs=-1 fans the k-points across every CPU core for a 3-10x
+    #    speedup; see :doc:`performance` for the full story.
     import numpy as np
     model  = tb_model.load(paths["hdf5"])
     result = SurfaceGreensFunction(
@@ -70,6 +72,7 @@ Quick start
         energies=np.linspace(-1, 1, 201),
         k_path=[[0, 0.5, 0], [0, 0, 0], [0.333, 0.333, 0]],
         k_labels=["M", r"$\Gamma$", "K"],
+        n_jobs=-1,
     ).run()
     result.figure_top.savefig("surface_top.png")
 
@@ -90,6 +93,7 @@ Quick start
    :hidden:
 
    fermi_alignment
+   performance
 
 
 .. toctree::

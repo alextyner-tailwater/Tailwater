@@ -85,12 +85,14 @@ natural reference — see :doc:`fermi_alignment` for the full guide.
     dos = BulkDOS(model, k_mesh=(8, 8, 8), energies=(-4, 4)).run()
     dos.figure.savefig("bulk_dos.png")
 
-    # Surface Green's function (Lopez-Sancho)
+    # Surface Green's function (Lopez-Sancho).
+    # n_jobs=-1 parallelizes across every CPU core — see :doc:`performance`.
     sgf = SurfaceGreensFunction(
         model, surface=np.eye(3),
         energies=np.linspace(-1, 1, 201),
         k_path=[[0, 0.5, 0], [0, 0, 0], [0.333, 0.333, 0]],
         k_labels=["M", r"$\Gamma$", "K"],
+        n_jobs=-1,
     ).run()
     sgf.figure_top.savefig("surface_top.png")
 

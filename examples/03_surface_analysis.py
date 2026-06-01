@@ -38,22 +38,26 @@ def main():
     skpm.figure_top   .savefig("surface_kpm_top.png")
     skpm.figure_bottom.savefig("surface_kpm_bottom.png")
 
-    # 3) Surface Green's function (Lopez-Sancho)
+    # 3) Surface Green's function (Lopez-Sancho).
+    #    n_jobs=-1 parallelizes k-points across CPU cores — typical 3-10x
+    #    speedup with no precision change. See docs/performance.rst.
     sgf = SurfaceGreensFunction(
         model, surface=np.eye(3),
         energies=np.linspace(-1.0, 1.0, 201),
         k_path=[[0, 0.5, 0], [0, 0, 0], [0.333, 0.333, 0]],
         k_labels=["M", r"$\Gamma$", "K"],
         N_path=101, thickness=6, NN=5, eps=0.005, device="cpu",
+        n_jobs=-1,
     ).run()
     sgf.figure_top   .savefig("surface_gf_top.png")
     sgf.figure_bottom.savefig("surface_gf_bottom.png")
     np.savez("surface_gf.npz", **sgf.as_dict())
 
-    # 4) 2D Fermi-arc map at E = 0
+    # 4) 2D Fermi-arc map at E = 0 (also parallelized over the kx-ky grid).
     arc = FermiArcMap(
         model, surface=np.eye(3), energy=0.0,
         Nx=40, Ny=40, thickness=6, NN=5, eps=0.005, device="cpu",
+        n_jobs=-1,
     ).run()
     arc.figure_top_interpolated.savefig("fermi_arc_top.png")
     arc.figure_bottom_interpolated.savefig("fermi_arc_bottom.png")
