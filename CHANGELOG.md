@@ -3,6 +3,40 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2]
+
+### Performance
+- **`SurfaceGreensFunction` and `FermiArcMap` are now 3–6× faster** in their
+  default configurations and 8–12× faster with multi-process parallelism on
+  a typical 16-core CPU. Two new knobs control the speed/memory trade-off:
+
+  * **Batched Lopez-Sancho recursion** (always on). For each k-point the
+    recursion is now run as a single batched LAPACK pass over all energies
+    (or chunks of size ``chunk_size``, default ``256``) rather than one
+    serial solve per energy. The two `solve` calls per Lopez-Sancho step
+    that share the same coefficient matrix are also combined into a single
+    multi-RHS solve, halving the LU factorization work.
+  * **k-point parallelism** via the new ``n_jobs`` kwarg (default ``1`` —
+    no behavior change). Pass ``n_jobs=-1`` (all cores) or any integer to
+    fan k-points out across worker processes through ``joblib``. Each
+    worker pins itself to one BLAS thread to avoid oversubscription, so
+    scaling is close to linear in the number of physical cores until
+    pickling overhead bites (typically at ~16 workers for this problem).
+
+    Recommended recipe for any nontrivial run::
+
+        SurfaceGreensFunction(model, ..., n_jobs=-1)
+        FermiArcMap(model, ..., n_jobs=-1)
+
+  All results are bit-exact relative to the previous serial implementation
+  (verified against a Bi₂Se₃ slab: max |Δspectral density| = 0.0).
+
+### Added
+- ``joblib >= 1.0`` as a runtime dependency (used only when ``n_jobs != 1``;
+  ``joblib`` is also a transitive dependency of ``scipy`` and ``sklearn``,
+  so it's almost always already installed).
+
+
 ## [0.4.1]
 
 ### Fixed

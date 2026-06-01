@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name            = "tailwater"
-version         = "0.4.1"
+version         = "0.4.2"
 description     = "Client + post-processing toolkit for the Tailwater Wannier-Hamiltonian inference API"
 readme          = "README.md"
 requires-python = ">=3.9"
@@ -49,6 +49,7 @@ dependencies = [
     "torch>=2.0",
     "torch-geometric>=2.0",
     "e3nn>=0.5",
+    "joblib>=1.0",
 ]
 
 [project.optional-dependencies]
