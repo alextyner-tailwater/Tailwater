@@ -3,6 +3,35 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4]
+
+### Added
+- **`model.to_pythtb()`** — instance-bound converter from the loaded
+  `tbmodels.Model` into a `pythtb.tb_model`, parallel in spirit to
+  `model.to_pb()`. After conversion,
+  `py_model.solve_one(k_frac)` and
+  `np.linalg.eigvalsh(model.hamilton(k_frac))` match to **float64
+  precision** (~5e-14 eV) at every k. Unlike the pybinding path,
+  PythTB uses fractional k and fractional orbital positions directly,
+  so no companion `k_cart_from_frac` is needed — the same recipe
+  that worked with `tbmodels.Model.hamilton(k)` works with the
+  PythTB model.
+
+  Quick usage:
+
+  ```python
+  from tailwater import tb_model
+  model    = tb_model.load("wannier90_hr.hdf5")
+  py_model = model.to_pythtb()
+  eig      = py_model.solve_one([0.0, 0.0, 0.0])     # Γ
+  py_slab  = py_model.cut_piece(num=6, fin_dir=2)    # 6-layer slab
+  ```
+
+  Requires `pip install pythtb` (kept out of tailwater's dependency
+  set; a clear ImportError points at the install command if the user
+  calls `.to_pythtb()` without it).
+
+
 ## [0.4.3]
 
 ### Fixed

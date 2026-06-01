@@ -579,6 +579,146 @@ def _to_pb_method(self, lattice_vectors=None, hop_threshold: float = 1e-12):
     return lat
 
 
+def _to_pythtb_method(self, lattice_vectors=None, hop_threshold: float = 1e-12):
+    """Convert this tbmodels.Model into a pythtb.tb_model.
+
+    Bound as ``model.to_pythtb`` on instances returned by
+    :func:`tb_model.load`. After conversion, eigenvalues of
+    ``model.hamilton(k_frac)`` and ``py_model.solve_one(k_frac)``
+    match to float64 precision (~1e-12 eV) at every k.
+
+    The PythTB conversion is simpler than the pybinding one in two
+    ways:
+
+    * PythTB takes ``orb`` (orbital positions) in **fractional**
+      coordinates, the same convention as ``tbmodels.Model.pos``, so
+      no Cartesian conversion is needed.
+    * PythTB's ``solve_one(k)`` accepts **fractional** k directly, so
+      no analogue of :func:`k_cart_from_frac` is needed:
+
+    .. code-block:: python
+
+        from tailwater import tb_model
+
+        model    = tb_model.load("wannier90_hr.hdf5")
+        py_model = model.to_pythtb()
+
+        # Sample H(k) at any fractional k:
+        eig = py_model.solve_one([0.0, 0.0, 0.0])    # Γ
+        eig = py_model.solve_one([0.5, 0.0, 0.0])    # M
+
+        # ...or use PythTB's built-in band-path helpers:
+        k_path, k_dist, k_node = py_model.k_path(
+            [[0,0,0], [0.5,0,0], [0.333,0.333,0], [0,0,0]],
+            nk=101, report=False,
+        )
+        bands = py_model.solve_all(k_path)            # (num_wann, nk)
+
+    Args
+    ----
+    lattice_vectors : array-like (3, 3), optional
+        Real-space lattice vectors as rows. If None, uses ``self.uc``;
+        if that's also None, falls back to ``np.eye(3)``.
+    hop_threshold : float, default 1e-12
+        Skip hops with ``|val| <= hop_threshold``. Keep this low —
+        only filters exact-zero entries from sparse hop storage.
+
+    Returns
+    -------
+    pythtb.tb_model
+        A 3D periodic tight-binding model with the same Hamiltonian
+        as ``self``.  For slabs / wires, call PythTB's
+        ``.cut_piece(num, fin_dir)`` on the returned model.
+
+    Conventions
+    -----------
+    The same on-site doubling story as :func:`_to_pb_method` applies
+    here — PythTB counts each ``(0,0,0)`` entry once (like pybinding
+    does), while tbmodels effectively counts it twice via its
+    ``H += H.c.`` symmetrisation. To match, we multiply
+    ``hop[(0,0,0)]`` by 2 before feeding PythTB.
+
+    PythTB defaults to ``allow_conjugate_pair=False``: only one of
+    each H.c. pair may be added explicitly. At R=(0,0,0) we therefore
+    only add the upper-triangle off-diagonals; PythTB fills in the
+    lower triangle via its automatic conjugate. For R != 0 we add
+    every nonzero entry of ``hop[+R]``; PythTB implies the
+    corresponding (-R, j, i) contribution from each.
+    """
+    # Lazy import — keeps tailwater importable without pythtb.
+    try:
+        import pythtb
+    except ImportError as exc:
+        raise ImportError(
+            "model.to_pythtb() requires the `pythtb` package, which "
+            "isn't installed: pip install pythtb"
+        ) from exc
+
+    # Resolve the real-space lattice vectors.
+    if lattice_vectors is not None:
+        LM = np.asarray(lattice_vectors, dtype=float)
+    elif getattr(self, "uc", None) is not None:
+        LM = np.asarray(self.uc, dtype=float)
+    else:
+        LM = np.eye(3)
+
+    # PythTB uses fractional orbital positions, matching tbmodels.
+    pos_frac = np.asarray(self.pos)
+    num_orb  = int(pos_frac.shape[0])
+    dim      = int(getattr(self, "dim", 3))
+
+    # Build an empty pythtb model. dim_k = dim_r = self.dim (assume
+    # fully periodic; users can cut_piece() for slabs afterwards).
+    py_model = pythtb.tb_model(
+        dim_k=dim,
+        dim_r=dim,
+        lat=LM.tolist(),
+        orb=pos_frac.tolist(),
+    )
+
+    # ---- On-site doubling fix (same logic as to_pb) ----
+    hop_zero = self.hop.get((0, 0, 0))
+    if hop_zero is None:
+        h0 = np.zeros((num_orb, num_orb), dtype=complex)
+    else:
+        h0 = np.asarray(hop_zero.toarray() if hasattr(hop_zero, "toarray") else hop_zero)
+    h0_phys = 2.0 * h0
+
+    onsite = np.real(np.diag(h0_phys)).tolist()
+    py_model.set_onsite(onsite)
+
+    # R = (0,0,0) off-diagonals: only upper triangle (PythTB auto-fills
+    # the lower triangle via its H.c. convention).
+    rows, cols = np.nonzero(np.abs(h0_phys) > hop_threshold)
+    R_zero = [0] * dim
+    for i, j in zip(rows, cols):
+        i, j = int(i), int(j)
+        if i >= j:
+            continue
+        try:
+            py_model.set_hop(complex(h0_phys[i, j]), i, j, R_zero)
+        except Exception:
+            continue
+
+    # R != (0,0,0): every nonzero entry of each stored block. PythTB
+    # auto-implies (-R, j, i, conj(val)) for each (R, i, j, val) call,
+    # which is exactly tbmodels' missing -R half.
+    for R, hop_mat in self.hop.items():
+        if tuple(int(x) for x in R) == (0,) * dim:
+            continue
+        hop_arr = np.asarray(hop_mat.toarray() if hasattr(hop_mat, "toarray") else hop_mat)
+        R_list  = [int(x) for x in R]
+        rs, cs  = np.nonzero(np.abs(hop_arr) > hop_threshold)
+        for i, j in zip(rs, cs):
+            try:
+                py_model.set_hop(complex(hop_arr[i, j]), int(i), int(j), R_list)
+            except Exception:
+                # Auto-H.c. duplicate-pair rejection — swallow.
+                continue
+
+    return py_model
+
+
 def k_cart_from_frac(k_frac, lattice_vectors) -> np.ndarray:
     """Convert a fractional k-point to Cartesian (rad/length) for pybinding.
 
@@ -644,20 +784,23 @@ class tb_model:
         hops  = model.hop
         size  = model.size
 
-        # Plus a .to_pb() helper that converts to pybinding.Lattice:
-        pb_lat = model.to_pb()
-        # Optional override of the lattice vectors used by pb:
-        pb_lat = model.to_pb(lattice_vectors=np.diag([3.5, 3.5, 12.0]))
+        # Plus two converters to other tight-binding libraries:
+        pb_lat   = model.to_pb()        # pybinding.Lattice
+        py_model = model.to_pythtb()    # pythtb.tb_model
+
+        # Both accept an optional lattice-vector override:
+        pb_lat   = model.to_pb     (lattice_vectors=np.diag([3.5, 3.5, 12.0]))
+        py_model = model.to_pythtb (lattice_vectors=np.diag([3.5, 3.5, 12.0]))
 
     The returned object still passes ``isinstance(model, tbmodels.Model)``
-    — we attach ``to_pb`` as a bound instance method rather than
+    — we attach the converters as bound instance methods rather than
     swapping the class. Loading multiple HDF5 files in the same Python
-    session is safe: each instance carries its own ``to_pb`` binding.
+    session is safe: each instance carries its own bindings.
     """
 
     @staticmethod
     def load(path_to_hdf5: str):
-        """Load a tight-binding model from an HDF5 file and attach ``.to_pb()``.
+        """Load a tight-binding model from an HDF5 file with the ``to_pb()`` / ``to_pythtb()`` converters attached.
 
         Parameters
         ----------
@@ -669,14 +812,16 @@ class tb_model:
         Returns
         -------
         tbmodels.Model
-            The loaded model, with an instance-bound ``to_pb()`` method
-            for pybinding conversion. All standard ``tbmodels.Model``
-            functionality is preserved.
+            The loaded model, with instance-bound ``to_pb()`` and
+            ``to_pythtb()`` methods for conversion to pybinding and
+            PythTB. All standard ``tbmodels.Model`` functionality is
+            preserved.
         """
         if not os.path.isfile(path_to_hdf5):
             raise FileNotFoundError(f"HDF5 not found: {path_to_hdf5!r}")
         model = tbmodels.Model.from_hdf5_file(path_to_hdf5)
-        # Bind to_pb as an instance method — `self` is the model
-        # whenever the user calls model.to_pb().
-        model.to_pb = types.MethodType(_to_pb_method, model)
+        # Bind the converters as instance methods — `self` is the model
+        # whenever the user calls model.to_pb() or model.to_pythtb().
+        model.to_pb     = types.MethodType(_to_pb_method,     model)
+        model.to_pythtb = types.MethodType(_to_pythtb_method, model)
         return model

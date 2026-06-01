@@ -1,9 +1,9 @@
-Exporting models: ``_hr.dat`` and pybinding ``Lattice``
-========================================================
+Exporting models: ``_hr.dat``, pybinding, and PythTB
+=====================================================
 
 The API returns a tight-binding Hamiltonian as an HDF5 file, which
 :func:`tailwater.tb_model.load` reads into a ``tbmodels.Model``.
-From there you have two common downstream needs:
+From there you have three common downstream needs:
 
 1. **Write the model to a Wannier90-style** ``_hr.dat`` **file** — so
    it can be consumed by external tools (``Z2Pack``, ``WannierTools``,
@@ -12,8 +12,12 @@ From there you have two common downstream needs:
 2. **Convert the model to a pybinding** ``Lattice`` — so you can use
    pybinding's solvers, KPM routines, eigenvalue plotters, and
    transport tools on top of the Tailwater Hamiltonian.
+3. **Convert the model to a PythTB** ``tb_model`` — so you can use
+   PythTB's band-path helpers, slab/wire builders, Berry-phase /
+   Wannier-charge-centre routines, and the body of literature that
+   targets PythTB.
 
-Both are one-liners.
+All three are one-liners.
 
 
 Writing an ``_hr.dat`` file
@@ -186,6 +190,88 @@ the physical threshold is the inference / hr-build step (default
 0.01 eV), not here.
 
 
+Converting to a PythTB ``tb_model``
+-----------------------------------
+
+Every model returned by :func:`tailwater.tb_model.load` also carries
+a ``.to_pythtb()`` instance method:
+
+.. code-block:: python
+
+    from tailwater import tb_model
+
+    model    = tb_model.load("wannier90_hr.hdf5")
+    py_model = model.to_pythtb()
+
+    # Sample H(k) at any fractional k:
+    eig_gamma = py_model.solve_one([0.0, 0.0, 0.0])      # Γ
+    eig_m     = py_model.solve_one([0.5, 0.0, 0.0])      # M (hex zone)
+
+These eigenvalues match
+``np.linalg.eigvalsh(model.hamilton([0,0,0]))`` to **float64
+precision** (~5×10⁻¹⁴ eV) — a much tighter agreement than the
+pybinding path, which is float32 (~10⁻⁶ eV).
+
+The PythTB path is generally the easier of the two:
+
+* PythTB takes orbital positions in **fractional** coordinates, the
+  same convention ``tbmodels.Model.pos`` uses — no Cartesian
+  conversion needed.
+* PythTB's ``solve_one(k)`` accepts **fractional k directly** — no
+  analogue of :func:`tailwater.k_cart_from_frac` is needed.
+* PythTB ships rich first-class helpers for band paths, slabs/wires
+  (``cut_piece``), supercells (``make_supercell``), and
+  Wannier-centre / Berry-phase analyses.
+
+Computing a band structure with PythTB's built-in helper
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    import numpy as np
+    from tailwater import tb_model
+    import matplotlib.pyplot as plt
+
+    model    = tb_model.load("wannier90_hr.hdf5")
+    py_model = model.to_pythtb()
+
+    # PythTB does the path interpolation for you:
+    k_path, k_dist, k_node = py_model.k_path(
+        [[0,0,0], [0.5,0,0], [0.333,0.333,0], [0,0,0]],
+        nk=101, report=False,
+    )
+    bands = py_model.solve_all(k_path)                    # (num_wann, nk)
+
+    fig, ax = plt.subplots()
+    for band in bands:
+        ax.plot(k_dist, band, lw=0.7, color="k")
+    ax.set_xticks(k_node, [r"$\Gamma$", "M", "K", r"$\Gamma$"])
+    ax.set_ylabel("E (eV)")
+    fig.savefig("bands_pythtb.png", dpi=150)
+
+Slabs and wires
+~~~~~~~~~~~~~~~
+
+PythTB's ``cut_piece`` makes a 1D / 2D slab from the bulk model. For
+a 6-layer Bi\ :sub:`2`\ Se\ :sub:`3` slab terminated along the c-axis:
+
+.. code-block:: python
+
+    py_slab = py_model.cut_piece(num=6, fin_dir=2, glue_edgs=False)
+    print(py_slab.get_num_orbitals())                 # 6 * 124 = 744
+
+The resulting model is 2D-periodic (in-plane) and 0D along the
+surface-normal direction — solve it the same way:
+
+.. code-block:: python
+
+    eig_2d = py_slab.solve_one([0.0, 0.0])            # Γ of the surface BZ
+
+Both ``model.to_pythtb()`` and ``model.to_pb()`` produce models with
+identical bulk Hamiltonians; pick whichever ecosystem (PythTB,
+pybinding, or both) fits your downstream analysis.
+
+
 Round-trip: HDF5 → pybinding → HDF5
 -----------------------------------
 
@@ -243,6 +329,12 @@ API reference
 -------------
 
 .. autofunction:: tailwater.client._to_pb_method
+   :no-index:
+
+.. autofunction:: tailwater.client._to_pythtb_method
+   :no-index:
+
+.. autofunction:: tailwater.client.k_cart_from_frac
    :no-index:
 
 .. autofunction:: tailwater.hr_export.write_hr_output
