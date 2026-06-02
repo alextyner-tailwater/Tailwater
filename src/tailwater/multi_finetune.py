@@ -526,6 +526,207 @@ def prepare_finetune_target(
 
 
 # ---------------------------------------------------------------------
+# Directory-based bulk discovery
+# ---------------------------------------------------------------------
+def _first_glob_match(
+    directory: str,
+    patterns: Sequence[str],
+) -> Optional[str]:
+    """Return the first file in ``directory`` matching any of ``patterns``.
+
+    Patterns are case-insensitive; a deterministic sort within each
+    pattern ensures reproducible behavior across runs / filesystems.
+    """
+    import fnmatch
+    try:
+        names = sorted(os.listdir(directory))
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    names_lower = [n.lower() for n in names]
+    for pat in patterns:
+        plow = pat.lower()
+        for n, nl in zip(names, names_lower):
+            if fnmatch.fnmatch(nl, plow):
+                return os.path.join(directory, n)
+    return None
+
+
+def prepare_finetune_targets_from_directory(
+    root_dir: str,
+    *,
+    embed_patterns: Sequence[str] = ("*embeddings*.pt", "*embedding*.pt"),
+    win_patterns:   Sequence[str] = ("*.win",),
+    hr_patterns:    Sequence[str] = ("*_hr.dat", "*_hr.hdf5", "*_hr.h5"),
+    out_dir:        Optional[str] = None,
+    fermi_shift:    float = 0.0,
+    strict:         bool  = False,
+    sort_names:     bool  = True,
+) -> List[dict]:
+    """Auto-discover (embedding, hr, .win) triples from a tree of subdirectories.
+
+    Layout convention::
+
+        root_dir/
+        ├── Bi2Se3/
+        │   ├── embeddings.pt      <- from `/upload_structure_and_download_embeddings/`
+        │   ├── wannier90.win      <- the user's
+        │   └── wannier90_hr.dat   <- the user's (or `_hr.hdf5`)
+        ├── Bi2Te3/
+        │   ├── embeddings.pt
+        │   ├── wannier90.win
+        │   └── wannier90_hr.dat
+        ├── ...
+        └── SnTe/
+            └── ...
+
+    One subdirectory per material; the **subdirectory name becomes the
+    material name** for training logs and the cached ``.pt`` filename.
+    Filenames inside each subdirectory can vary — the patterns below
+    cover the common conventions.
+
+    The function calls :func:`prepare_finetune_target` once per
+    discovered subdirectory and returns the list of prepared items
+    ready to hand to :func:`finetune_heads_multi`.
+
+    Args
+    ----
+    root_dir : str
+        Path to the directory containing one subdirectory per material.
+    embed_patterns : sequence of str, default ``("*embeddings*.pt",
+                     "*embedding*.pt")``
+        Glob patterns (case-insensitive) used to locate the API
+        embedding file within each subdirectory. First match wins.
+    win_patterns : sequence of str, default ``("*.win",)``
+        Glob patterns for the Wannier90 .win file.
+    hr_patterns : sequence of str, default ``("*_hr.dat", "*_hr.hdf5",
+                  "*_hr.h5")``
+        Glob patterns for the Wannier hr-model file. ``.dat`` is tried
+        before HDF5; either is read transparently by
+        ``tbmodels.Model``.
+    out_dir : str, optional
+        If given, each prepared item is also saved as
+        ``out_dir/{name}_target.pt`` for reuse on subsequent runs.
+    fermi_shift : float, default 0.0
+        Forwarded to :func:`prepare_finetune_target` for every material.
+        Use this to align the user's hr-model Fermi reference with the
+        Tailwater convention if the hr-files are not already pre-shifted.
+    strict : bool, default False
+        If True, raise on the first subdirectory that's missing any of
+        the three required files. If False (default), skip that
+        subdirectory with a warning and continue.
+    sort_names : bool, default True
+        Process subdirectories in sorted-by-name order for reproducible
+        training-set ordering.
+
+    Returns
+    -------
+    list of dict
+        One entry per successfully-prepared material — same dict
+        format as :func:`prepare_finetune_target` (with the material
+        name set to the subdirectory name). Ready to pass straight to
+        :func:`finetune_heads_multi` as ``train_targets`` /
+        ``val_targets``.
+
+    Example
+    -------
+    .. code-block:: python
+
+        from tailwater import (
+            prepare_finetune_targets_from_directory,
+            finetune_heads_multi,
+        )
+
+        train_items = prepare_finetune_targets_from_directory(
+            "datasets/train",
+            out_dir="finetune_out/cache",
+        )
+        val_items   = prepare_finetune_targets_from_directory(
+            "datasets/val",
+            out_dir="finetune_out/cache",
+        )
+
+        finetune_heads_multi(
+            train_targets = train_items,
+            val_targets   = val_items,
+            start_lr      = 5e-5, end_lr = 5e-7, num_epochs = 50,
+            energy_range  = (-2.0, 2.0),
+            decay_sigma   = 1.0,
+            device        = "cuda",
+            save_path     = "finetune_out",
+        )
+    """
+    if not os.path.isdir(root_dir):
+        raise FileNotFoundError(f"root_dir does not exist or is not a directory: {root_dir!r}")
+    if out_dir is not None:
+        os.makedirs(out_dir, exist_ok=True)
+
+    entries = sorted(os.listdir(root_dir)) if sort_names else os.listdir(root_dir)
+    subdirs = [
+        os.path.join(root_dir, name)
+        for name in entries
+        if os.path.isdir(os.path.join(root_dir, name))
+    ]
+    if not subdirs:
+        raise ValueError(
+            f"No subdirectories found in {root_dir!r}. Each material should "
+            f"live in its own subdirectory containing the API embedding, the "
+            f"user's .win, and the user's hr-file."
+        )
+
+    items: List[dict] = []
+    skipped: List[Tuple[str, str]] = []
+    print(f"Scanning {root_dir!r} for (embedding, .win, hr) triples in "
+          f"{len(subdirs)} subdirectories ...")
+    for sd in subdirs:
+        name = os.path.basename(sd)
+        emb  = _first_glob_match(sd, embed_patterns)
+        win  = _first_glob_match(sd, win_patterns)
+        hrp  = _first_glob_match(sd, hr_patterns)
+
+        missing = []
+        if emb is None: missing.append("embedding")
+        if win is None: missing.append(".win")
+        if hrp is None: missing.append("hr-file")
+        if missing:
+            msg = (f"{name}: missing {', '.join(missing)} "
+                   f"(in {sd!r})")
+            if strict:
+                raise FileNotFoundError(msg)
+            print(f"  [skip] {msg}")
+            skipped.append((name, ", ".join(missing)))
+            continue
+
+        out_path = (os.path.join(out_dir, f"{name}_target.pt")
+                    if out_dir is not None else None)
+        try:
+            item = prepare_finetune_target(
+                embed_path        = emb,
+                hr_path_or_model  = hrp,
+                win_path          = win,
+                fermi_shift       = fermi_shift,
+                out_path          = out_path,
+                name              = name,
+            )
+        except Exception as exc:
+            if strict:
+                raise
+            print(f"  [skip] {name}: {type(exc).__name__}: {exc}")
+            skipped.append((name, f"{type(exc).__name__}: {exc}"))
+            continue
+
+        edges = int(item["gdata"].edge_targets.shape[0])
+        active = int(item["gdata"].node_features[:, 109:127].sum())
+        print(f"  [ok]   {name}: {edges} edges, {active} active orbitals  "
+              f"(embed={os.path.basename(emb)}, win={os.path.basename(win)}, "
+              f"hr={os.path.basename(hrp)})")
+        items.append(item)
+
+    print(f"\nPrepared {len(items)} materials"
+          f"{f' ({len(skipped)} skipped)' if skipped else ''}.")
+    return items
+
+
+# ---------------------------------------------------------------------
 # Multi-material fine-tuning
 # ---------------------------------------------------------------------
 def _load_item(item: Union[str, dict]) -> dict:

@@ -33,7 +33,7 @@ checkpoint (HeadsOnly.pth) and HDF5 / .pt artifacts produced by the
 API are needed.
 """
 
-__version__ = "0.4.9"
+__version__ = "0.4.10"
 
 # ---- HTTP client + HDF5 loader ----
 from .client import (
@@ -66,6 +66,7 @@ from .finetune_heads import subspace_projection
 # ---- Multi-material fine-tuning against user-supplied Wannier targets ----
 from .multi_finetune import (
     prepare_finetune_target,
+    prepare_finetune_targets_from_directory,
     finetune_heads_multi,
     build_active_mask,
     build_edge_targets_from_hr,
@@ -129,7 +130,8 @@ __all__ = [
     # subspace
     "subspace_projection",
     # multi-material finetune
-    "prepare_finetune_target", "finetune_heads_multi",
+    "prepare_finetune_target", "prepare_finetune_targets_from_directory",
+    "finetune_heads_multi",
     "build_active_mask", "build_edge_targets_from_hr",
     "active_orbitals_from_win", "parse_win_projections", "parse_win_atoms",
     "SPATIAL_LABEL_TO_INDEX",

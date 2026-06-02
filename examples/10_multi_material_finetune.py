@@ -5,88 +5,81 @@ Wannier Hamiltonians the user computed themselves (the complement of
 single-material `subspace_projection`, which self-distills against
 the API's own full-model output).
 
-Workflow per material
----------------------
-  1. Call the API once to get the backbone embedding `.pt`
-     (the file produced by `/upload_structure_and_download_embeddings/`).
-  2. Have the matching Wannier hr-file (`_hr.dat` or `_hr.hdf5`) AND
-     the `.win` file you fed Wannier90.  The .win's projection block
-     (e.g. `Bi: s, p, d` / `Se: s, p`) plus the `atoms_cart` block
-     fully determine the per-atom orbital layout — nothing else needed.
-  3. Call `prepare_finetune_target(embed_path, hr_path, win_path)`.
-     The per-atom active mask is parsed straight out of the .win
-     (the same convention the API uses server-side), so you never
-     need to type orbital lists by hand.
+Layout convention
+-----------------
 
-Then call `finetune_heads_multi` on the list of prepared items.
+Organise the user's data on disk as one subdirectory per material::
 
-Example below uses one material as both training and validation just
-to keep the script self-contained — replace `TRAIN_INPUTS` /
-`VAL_INPUTS` with your real list.
+    datasets/
+    ├── train/
+    │   ├── Bi2Se3/
+    │   │   ├── embeddings.pt        # from `/upload_structure_and_download_embeddings/`
+    │   │   ├── wannier90.win        # the user's Wannier90 input
+    │   │   └── wannier90_hr.dat     # the user's Wannier hr-file (or `_hr.hdf5`)
+    │   ├── Bi2Te3/
+    │   │   ├── embeddings.pt
+    │   │   ├── wannier90.win
+    │   │   └── wannier90_hr.dat
+    │   └── ...
+    └── val/
+        ├── Sb2Te3/
+        │   └── ...
+        └── ...
+
+Then a single call discovers every triple, parses the .win to derive
+per-atom orbital layouts, and prepares the per-material training
+items.  The subdirectory name becomes the material name in training
+logs and the cached `.pt` filename.
+
+The .win projection block (e.g. `Bi: s, p, d` / `Se: s, p`) plus the
+`atoms_cart` block together fully determine the per-atom orbital
+layout — nothing else needed.
 """
 
 import os
 from tailwater import (
-    prepare_finetune_target,
+    prepare_finetune_targets_from_directory,
     finetune_heads_multi,
 )
 
 
 # ----------------------------------------------------------------------
-# Per-material inputs.  In a real run you'd have N tuples here.
+# Layout
 # ----------------------------------------------------------------------
-# Just three paths per material — no orbital lists.  The .win projection
-# + atoms_cart blocks fully determine the active mask.
-TRAIN_INPUTS = [
-    # (embedding .pt, hr-file, .win file, friendly name)
-    ("outputs/Bi2Se3_embeddings.pt", "wannier_data/Bi2Se3_hr.dat",  "wannier_data/Bi2Se3.win",  "Bi2Se3"),
-    # ("outputs/Bi2Te3_embeddings.pt", "wannier_data/Bi2Te3_hr.dat",  "wannier_data/Bi2Te3.win",  "Bi2Te3"),
-    # ("outputs/Sb2Te3_embeddings.pt", "wannier_data/Sb2Te3_hr.hdf5", "wannier_data/Sb2Te3.win",  "Sb2Te3"),
-    # ... add as many as you have ...
-]
+TRAIN_DIR = "datasets/train"            # one subdirectory per training material
+VAL_DIR   = "datasets/val"              # one subdirectory per validation material
+CACHE_DIR = "finetune_out/cache"        # per-material prepared targets get saved here
+SAVE_DIR  = "finetune_out"              # final checkpoint lands here
 
-VAL_INPUTS = [
-    # ("outputs/SnTe_embeddings.pt",   "wannier_data/SnTe_hr.dat",    "wannier_data/SnTe.win",    "SnTe"),
-]
-
-SAVE_DIR     = "./finetune_out"
-ENERGY_RANGE = (-2.0, 2.0)             # eV — eigenvalues outside this window are masked
-DEVICE       = "cpu"                    # use "cuda" if available
+ENERGY_RANGE = (-2.0, 2.0)              # eV — eigenvalues outside this window are masked
+DEVICE       = "cpu"                     # use "cuda" if available
 
 
 def main():
     os.makedirs(SAVE_DIR, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # 1)  Build per-material training targets.  The .win parsing is
-    #     automatic — no manual orbital lists.
+    # 1)  Auto-discover (embedding, hr, .win) triples in the train + val
+    #     directories.  The function walks each subdirectory, finds the
+    #     three files by glob pattern, parses the .win for the per-atom
+    #     orbital layout, and prepares the PyG `Data`-with-targets
+    #     object.  Each prepared item is also cached as a .pt under
+    #     `CACHE_DIR` so re-running this script is cheap.
     # ------------------------------------------------------------------
-    print(f"Building {len(TRAIN_INPUTS)} training targets ...")
-    train_items = []
-    for embed_path, hr_path, win_path, name in TRAIN_INPUTS:
-        item = prepare_finetune_target(
-            embed_path       = embed_path,
-            hr_path_or_model = hr_path,
-            win_path         = win_path,
-            name             = name,
-            out_path         = os.path.join(SAVE_DIR, f"{name}_target.pt"),
-        )
-        train_items.append(item)
-        print(f"  {name}: {item['gdata'].edge_targets.shape[0]} edges, "
-              f"{int(item['gdata'].node_features[:, 109:127].sum())} active orbitals")
+    train_items = prepare_finetune_targets_from_directory(
+        TRAIN_DIR,
+        out_dir = CACHE_DIR,
+        strict  = False,        # skip subdirectories missing any of the 3 files
+    )
 
-    val_items = []
-    for embed_path, hr_path, win_path, name in VAL_INPUTS:
-        val_items.append(prepare_finetune_target(
-            embed_path       = embed_path,
-            hr_path_or_model = hr_path,
-            win_path         = win_path,
-            name             = name,
-            out_path         = os.path.join(SAVE_DIR, f"{name}_target.pt"),
-        ))
+    val_items = prepare_finetune_targets_from_directory(
+        VAL_DIR,
+        out_dir = CACHE_DIR,
+        strict  = False,
+    )
 
     # ------------------------------------------------------------------
-    # 2)  Run the multi-material fine-tune
+    # 2)  Multi-material fine-tune
     # ------------------------------------------------------------------
     final_ckpt = finetune_heads_multi(
         train_targets   = train_items,

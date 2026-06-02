@@ -3,6 +3,60 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.10]
+
+### Added
+- **`tailwater.prepare_finetune_targets_from_directory(root_dir,
+  ...)`** — bulk auto-discovery of (embedding, hr, .win) triples
+  from a tree of per-material subdirectories.
+
+  Layout convention:
+
+      datasets/train/
+      ├── Bi2Se3/
+      │   ├── embeddings.pt
+      │   ├── wannier90.win
+      │   └── wannier90_hr.dat
+      ├── Bi2Te3/
+      │   └── ...
+      └── ...
+
+  One subdirectory per material; the **subdirectory name becomes the
+  material name** in training logs and the cached `.pt` filename. The
+  function walks the tree, finds each triple via glob patterns
+  (defaults: `*embeddings*.pt`, `*.win`, `*_hr.dat` / `*_hr.hdf5`),
+  and calls `prepare_finetune_target` once per discovered
+  subdirectory. Returns the list of prepared items ready to hand to
+  `finetune_heads_multi`.
+
+  Quick recipe:
+
+  ```python
+  from tailwater import (
+      prepare_finetune_targets_from_directory,
+      finetune_heads_multi,
+  )
+  train_items = prepare_finetune_targets_from_directory("datasets/train",
+                                                         out_dir="cache")
+  val_items   = prepare_finetune_targets_from_directory("datasets/val",
+                                                         out_dir="cache")
+  finetune_heads_multi(train_targets=train_items, val_targets=val_items,
+                       start_lr=5e-5, end_lr=5e-7, num_epochs=50,
+                       energy_range=(-2.0, 2.0), decay_sigma=1.0,
+                       device="cuda", save_path="finetune_out")
+  ```
+
+  Subdirectories missing any of the three required files are skipped
+  with a warning by default; pass `strict=True` to make missing files
+  raise instead. Glob patterns are user-customisable for non-standard
+  filename conventions.
+
+  Verified end-to-end on a synthetic 3-subdirectory tree (2 complete +
+  1 missing .win): the discovery skips the bad one with a warning,
+  the full multi-finetune loop runs to completion, and `strict=True`
+  raises with a clear "missing .win" message on the same input.
+
+
 ## [0.4.9]
 
 ### Changed
