@@ -3,6 +3,26 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6]
+
+### Fixed
+- **`subspace_projection(device='cuda', ...)` crashed at the hr-write
+  step** with a cross-device error like
+  ``RuntimeError: expected device cuda:0 but got device cpu`` (the
+  exact message varies by torch version). The `build_hr_model` /
+  `build_hr_model_fast` builders allocate the dense intermediate
+  `HoppT` tensor on CPU, then fancy-index-assign from `edge_pred` /
+  `onsite_pred`. When the surrounding workflow runs on CUDA those
+  inputs are GPU-resident and the assignment errors. The builders now
+  detach + move every torch-tensor input to CPU at the boundary, so
+  callers can pass GPU tensors without the build step caring.
+
+  Verified end-to-end on the equivalent macOS `mps` device (the only
+  non-CPU device available on the build host): the resulting
+  `tbmodels.Model` produces a Hamiltonian bit-identical to the CPU
+  path (max diff = 0 at every k).
+
+
 ## [0.4.5]
 
 ### Added

@@ -33,7 +33,7 @@ checkpoint (HeadsOnly.pth) and HDF5 / .pt artifacts produced by the
 API are needed.
 """
 
-__version__ = "0.4.5"
+__version__ = "0.4.6"
 
 # ---- HTTP client + HDF5 loader ----
 from .client import (

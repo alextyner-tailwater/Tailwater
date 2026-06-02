@@ -64,6 +64,26 @@ def _to_numpy(x):
     return np.asarray(x)
 
 
+def _to_cpu_tensor(x):
+    """Return ``x`` as a CPU ``torch.Tensor`` (detached).
+
+    Both builders below allocate intermediate buffers on CPU (the dense
+    ``HoppT`` tensor) and then fancy-index those buffers from the user
+    supplied ``edge_pred`` / ``onsite_pred`` / ``gdata.edge_vectors``.
+    If those inputs come from a CUDA-resident model (the common case
+    after ``subspace_projection(device='cuda', ...)``), CUDA → CPU
+    fancy-index assignment raises a cross-device ``RuntimeError`` mid
+    build.
+
+    This helper is the boundary that makes the hr-build CPU-only
+    regardless of where the model trained. It's a no-op for inputs
+    already on CPU, so the CPU code path is unchanged.
+    """
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu()
+    return x
+
+
 
     
     
@@ -100,10 +120,18 @@ def build_hr_model(edge_pred,
     """
     _require_pybinding()
 
+    # ---- Move user-supplied tensors to CPU at the boundary ----
+    # (Allows callers to pass CUDA-resident outputs from a model trained
+    #  with device='cuda' without hitting a cross-device assignment error
+    #  in the dense-HoppT fill below.)
+    edge_pred    = _to_cpu_tensor(edge_pred)
+    onsite_pred  = _to_cpu_tensor(onsite_pred)
+    edge_vectors = _to_cpu_tensor(gdata.edge_vectors)
+
     # ---- Normalize predictions to numpy with the expected shapes ----
     edge_pred = edge_pred.reshape((gdata.edge_index).shape[1],18,18,2)
-    is_self_loop = (gdata.edge_vectors[:].norm(dim=-1) == 0)
-    weights=(torch.sign(torch.abs((gdata.edge_vectors[:]).norm(dim=1))))
+    is_self_loop = (edge_vectors[:].norm(dim=-1) == 0)
+    weights=(torch.sign(torch.abs((edge_vectors[:]).norm(dim=1))))
     weights=weights.view(-1, 1, 1, 1)
     edge_pred = weights*edge_pred
     edge_pred[is_self_loop] = onsite_pred
@@ -186,10 +214,18 @@ def build_hr_model_fast(edge_pred,
     """
     _require_pybinding()
 
+    # ---- Move user-supplied tensors to CPU at the boundary ----
+    # (Allows callers to pass CUDA-resident outputs from a model trained
+    #  with device='cuda' without hitting a cross-device assignment error
+    #  in the dense-HoppT fill below.)
+    edge_pred    = _to_cpu_tensor(edge_pred)
+    onsite_pred  = _to_cpu_tensor(onsite_pred)
+    edge_vectors = _to_cpu_tensor(gdata.edge_vectors)
+
     # ---- Same preprocessing as build_hr_model ----
     edge_pred = edge_pred.reshape((gdata.edge_index).shape[1], 18, 18, 2)
-    is_self_loop = (gdata.edge_vectors[:].norm(dim=-1) == 0)
-    weights = torch.sign(torch.abs(gdata.edge_vectors[:].norm(dim=1)))
+    is_self_loop = (edge_vectors[:].norm(dim=-1) == 0)
+    weights = torch.sign(torch.abs(edge_vectors[:].norm(dim=1)))
     weights = weights.view(-1, 1, 1, 1)
     edge_pred = weights * edge_pred
     edge_pred[is_self_loop] = onsite_pred
