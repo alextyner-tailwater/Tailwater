@@ -1,34 +1,28 @@
 """Multi-material heads-only fine-tune against user Wannier targets.
 
-This example walks through the full workflow when you want to refine
-the API heads on a *set* of materials whose ground-truth Wannier
-Hamiltonians you computed yourself (as opposed to single-material
-self-distillation, which is `subspace_projection`).
+Refines the API heads on a *set* of materials whose ground-truth
+Wannier Hamiltonians the user computed themselves (the complement of
+single-material `subspace_projection`, which self-distills against
+the API's own full-model output).
 
-Workflow
---------
-
-For each material in the dataset:
-
+Workflow per material
+---------------------
   1. Call the API once to get the backbone embedding `.pt`
-     (the file produced by /upload_structure_and_download_embeddings/).
-  2. Have a Wannier Hamiltonian (`_hr.dat` or `_hr.hdf5`) and know
-     which spatial orbitals were projected per atom — e.g. atoms
-     1..2 ("Se") have just ``[s, pz, px, py]`` and atoms 3..8 ("Bi")
-     have the full ``[s, pz, px, py, dz2, dxz, dyz, dx2-y2, dxy]``.
-  3. Call `prepare_finetune_target` to build the per-material
-     PyG `Data`-with-targets object (cached as a .pt if you'd like
-     to skip the build step on subsequent runs).
+     (the file produced by `/upload_structure_and_download_embeddings/`).
+  2. Have the matching Wannier hr-file (`_hr.dat` or `_hr.hdf5`) AND
+     the `.win` file you fed Wannier90.  The .win's projection block
+     (e.g. `Bi: s, p, d` / `Se: s, p`) plus the `atoms_cart` block
+     fully determine the per-atom orbital layout — nothing else needed.
+  3. Call `prepare_finetune_target(embed_path, hr_path, win_path)`.
+     The per-atom active mask is parsed straight out of the .win
+     (the same convention the API uses server-side), so you never
+     need to type orbital lists by hand.
 
-Then call `finetune_heads_multi` on the list of prepared targets to
-run the actual fine-tune.
+Then call `finetune_heads_multi` on the list of prepared items.
 
-The example below uses one Bi2Se3 material as both training and
-validation just to keep the script self-contained — replace
-`TRAIN_ITEMS` / `VAL_ITEMS` with your real list.
-
-Requires:
-    pip install tailwater
+Example below uses one material as both training and validation just
+to keep the script self-contained — replace `TRAIN_INPUTS` /
+`VAL_INPUTS` with your real list.
 """
 
 import os
@@ -41,25 +35,18 @@ from tailwater import (
 # ----------------------------------------------------------------------
 # Per-material inputs.  In a real run you'd have N tuples here.
 # ----------------------------------------------------------------------
-# active_orbitals[a] = the list of SPATIAL orbital labels projected on
-#                       atom `a` in the user's hr-model.  Each spatial
-#                       slot covers both spin partners automatically.
-#                       Valid labels: s, pz, px, py, dz2, dxz, dyz,
-#                                     dx2-y2, dxy.
-BI2SE3_ACTIVE = (
-    [["s", "pz", "px", "py"]] * 2                                       # 2 Se atoms (s+p)
-    + [["s", "pz", "px", "py", "dz2", "dxz", "dyz", "dx2-y2", "dxy"]] * 6  # 6 Bi atoms (s+p+d)
-)
-
+# Just three paths per material — no orbital lists.  The .win projection
+# + atoms_cart blocks fully determine the active mask.
 TRAIN_INPUTS = [
-    # (embedding .pt path, hr-file path, per-atom active_orbitals, friendly name)
-    ("outputs/Bi2Se3_embeddings.pt", "wannier_data/Bi2Se3_hr.hdf5", BI2SE3_ACTIVE, "Bi2Se3"),
-    # ("outputs/Bi2Te3_embeddings.pt", "wannier_data/Bi2Te3_hr.hdf5", BI2TE3_ACTIVE, "Bi2Te3"),
+    # (embedding .pt, hr-file, .win file, friendly name)
+    ("outputs/Bi2Se3_embeddings.pt", "wannier_data/Bi2Se3_hr.dat",  "wannier_data/Bi2Se3.win",  "Bi2Se3"),
+    # ("outputs/Bi2Te3_embeddings.pt", "wannier_data/Bi2Te3_hr.dat",  "wannier_data/Bi2Te3.win",  "Bi2Te3"),
+    # ("outputs/Sb2Te3_embeddings.pt", "wannier_data/Sb2Te3_hr.hdf5", "wannier_data/Sb2Te3.win",  "Sb2Te3"),
     # ... add as many as you have ...
 ]
 
 VAL_INPUTS = [
-    # ("outputs/Sb2Te3_embeddings.pt", "wannier_data/Sb2Te3_hr.hdf5", SB2TE3_ACTIVE, "Sb2Te3"),
+    # ("outputs/SnTe_embeddings.pt",   "wannier_data/SnTe_hr.dat",    "wannier_data/SnTe.win",    "SnTe"),
 ]
 
 SAVE_DIR     = "./finetune_out"
@@ -71,30 +58,31 @@ def main():
     os.makedirs(SAVE_DIR, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # 1)  Build per-material training targets
+    # 1)  Build per-material training targets.  The .win parsing is
+    #     automatic — no manual orbital lists.
     # ------------------------------------------------------------------
     print(f"Building {len(TRAIN_INPUTS)} training targets ...")
     train_items = []
-    for embed_path, hr_path, active_orbitals, name in TRAIN_INPUTS:
+    for embed_path, hr_path, win_path, name in TRAIN_INPUTS:
         item = prepare_finetune_target(
-            embed_path      = embed_path,
-            hr_path_or_model= hr_path,
-            active_orbitals = active_orbitals,
-            name            = name,
-            out_path        = os.path.join(SAVE_DIR, f"{name}_target.pt"),
+            embed_path       = embed_path,
+            hr_path_or_model = hr_path,
+            win_path         = win_path,
+            name             = name,
+            out_path         = os.path.join(SAVE_DIR, f"{name}_target.pt"),
         )
         train_items.append(item)
         print(f"  {name}: {item['gdata'].edge_targets.shape[0]} edges, "
               f"{int(item['gdata'].node_features[:, 109:127].sum())} active orbitals")
 
     val_items = []
-    for embed_path, hr_path, active_orbitals, name in VAL_INPUTS:
+    for embed_path, hr_path, win_path, name in VAL_INPUTS:
         val_items.append(prepare_finetune_target(
-            embed_path      = embed_path,
-            hr_path_or_model= hr_path,
-            active_orbitals = active_orbitals,
-            name            = name,
-            out_path        = os.path.join(SAVE_DIR, f"{name}_target.pt"),
+            embed_path       = embed_path,
+            hr_path_or_model = hr_path,
+            win_path         = win_path,
+            name             = name,
+            out_path         = os.path.join(SAVE_DIR, f"{name}_target.pt"),
         ))
 
     # ------------------------------------------------------------------

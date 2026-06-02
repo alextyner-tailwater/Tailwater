@@ -77,6 +77,137 @@ SPATIAL_LABEL_TO_INDEX: Dict[str, int] = {
     "dxy":    8,
 }
 
+# Wannier90 shell → ordered list of spatial-orbital labels in the
+# canonical 18-basis order. Matches the row-major iteration order
+# `process_win` uses on the server side, so the compact orbital
+# indices in the user's hr-file line up with the (atom, orbital_in_18)
+# slots we read out below.
+_SHELL_TO_SPATIAL: Dict[str, List[str]] = {
+    "s": ["s"],
+    "p": ["pz", "px", "py"],
+    "d": ["dz2", "dxz", "dyz", "dx2-y2", "dxy"],
+}
+
+
+# ---------------------------------------------------------------------
+# Wannier90 .win parsing  (mirrors structure_io.process_win)
+# ---------------------------------------------------------------------
+def parse_win_projections(win_path: str) -> Dict[str, List[str]]:
+    """Parse the ``begin_projections / end_projections`` block of a .win file.
+
+    Returns a dict mapping each element symbol to its list of shell
+    labels (``"s"``, ``"p"``, ``"d"``), in the order they appear on the
+    projection line. Example:
+
+        Bi : s, p, d
+        Se : s, p
+
+    becomes ``{"Bi": ["s", "p", "d"], "Se": ["s", "p"]}``.
+    """
+    with open(win_path, "r") as f:
+        lines = f.readlines()
+    inside  = False
+    proj_lines: List[str] = []
+    for line in lines:
+        line = line.strip()
+        if line.lower().startswith("begin_projections"):
+            inside = True; continue
+        if line.lower().startswith("end_projections"):
+            break
+        if inside and line:
+            proj_lines.append(line)
+
+    if not proj_lines:
+        raise ValueError(
+            f"No projections block found in {win_path!r}. Expected lines "
+            f"between `begin_projections` and `end_projections`."
+        )
+
+    out: Dict[str, List[str]] = {}
+    for ln in proj_lines:
+        cleaned = ln.replace(" ", "")
+        if ":" not in cleaned:
+            raise ValueError(
+                f"Malformed projection line in {win_path!r}: {ln!r}. "
+                f"Expected `Element: shell, shell, ...`."
+            )
+        sym, orb_str = cleaned.split(":", 1)
+        shells = [s for s in orb_str.split(",") if s]
+        for sh in shells:
+            if sh not in _SHELL_TO_SPATIAL:
+                raise ValueError(
+                    f"Unknown shell label {sh!r} for element {sym!r} in "
+                    f"{win_path!r}. Supported: {sorted(_SHELL_TO_SPATIAL)}."
+                )
+        out[sym] = shells
+    return out
+
+
+def parse_win_atoms(win_path: str) -> List[Tuple[str, List[float]]]:
+    """Parse the ``begin atoms_cart / end atoms_cart`` block.
+
+    Returns ``[(element_symbol, [x, y, z]), ...]`` in the order the
+    atoms appear in the file. This is the same order the compact
+    orbital indices follow in the user's hr-file.
+    """
+    with open(win_path, "r") as f:
+        lines = f.readlines()
+    inside = False
+    atoms: List[Tuple[str, List[float]]] = []
+    for line in lines:
+        line = line.strip()
+        if line.lower().startswith("begin atoms_cart"):
+            inside = True; continue
+        if line.lower().startswith("end atoms_cart"):
+            break
+        if inside and line:
+            parts = line.split()
+            if len(parts) >= 4:
+                atoms.append((parts[0], [float(x) for x in parts[1:4]]))
+    if not atoms:
+        raise ValueError(
+            f"No atoms_cart block found in {win_path!r}. Expected lines "
+            f"between `begin atoms_cart` and `end atoms_cart`."
+        )
+    return atoms
+
+
+def active_orbitals_from_win(win_path: str) -> List[List[str]]:
+    """Per-atom list of spatial-orbital labels for the 18-basis active mask.
+
+    Combines :func:`parse_win_projections` and :func:`parse_win_atoms`,
+    walking the atoms in .win order and expanding each shell label
+    (``"s" / "p" / "d"``) into the canonical Tailwater spatial-orbital
+    sequence (``["s"]`` / ``["pz", "px", "py"]`` / ``["dz2", "dxz",
+    "dyz", "dx2-y2", "dxy"]``). Order matters: it determines the
+    compact-orbital → ``(atom, orbital_in_18)`` mapping used by
+    :func:`build_edge_targets_from_hr`.
+
+    Returns
+    -------
+    list of list of str
+        ``out[a]`` is the spatial-orbital list for atom ``a``,
+        suitable as the ``active_orbitals`` argument to
+        :func:`prepare_finetune_target` /
+        :func:`build_active_mask` / :func:`build_edge_targets_from_hr`.
+    """
+    projections = parse_win_projections(win_path)
+    atoms       = parse_win_atoms(win_path)
+
+    out: List[List[str]] = []
+    for sym, _pos in atoms:
+        if sym not in projections:
+            raise ValueError(
+                f"Atom {sym!r} in {win_path!r} has no matching entry in the "
+                f"projections block. Add it (e.g. `{sym}: s, p, d`) or remove "
+                f"the atom."
+            )
+        spatial: List[str] = []
+        for sh in projections[sym]:
+            spatial.extend(_SHELL_TO_SPATIAL[sh])
+        out.append(spatial)
+    return out
+
 
 # ---------------------------------------------------------------------
 # Active-orbital mask construction
@@ -253,8 +384,9 @@ def build_edge_targets_from_hr(
 def prepare_finetune_target(
     embed_path: str,
     hr_path_or_model: Union[str, tbmodels.Model],
-    active_orbitals: Sequence[Sequence[str]],
+    win_path: Optional[str] = None,
     *,
+    active_orbitals: Optional[Sequence[Sequence[str]]] = None,
     fermi_shift: float = 0.0,
     out_path: Optional[str] = None,
     name: Optional[str] = None,
@@ -263,7 +395,23 @@ def prepare_finetune_target(
 
     Merges the API-supplied embedding (PyG ``Data`` with ``f_out`` /
     ``edge_feat`` from the backbone) with user-supplied targets
-    derived from the user's hr-model.
+    derived from the user's Wannier hr-model.
+
+    The canonical usage is to point at the same ``.win`` file you fed
+    Wannier90 — the projection block (e.g. ``Bi: s, p, d`` /
+    ``Se: s, p``) and the ``atoms_cart`` block together fully
+    determine the per-atom orbital layout, and the helper
+    :func:`active_orbitals_from_win` reconstructs the per-atom spatial
+    list automatically. Customers therefore only need to provide
+    ``(embed_path, hr_path, win_path)`` for each material:
+
+    .. code-block:: python
+
+        item = prepare_finetune_target(
+            embed_path="outputs/Bi2Se3_embeddings.pt",
+            hr_path_or_model="wannier_data/Bi2Se3_hr.dat",
+            win_path="wannier_data/Bi2Se3.win",
+        )
 
     Args
     ----
@@ -273,8 +421,16 @@ def prepare_finetune_target(
         The user's Wannier Hamiltonian — either a path readable by
         ``tbmodels.Model.from_hdf5_file`` / ``from_hr_file`` (chosen
         by extension), or an already-loaded ``tbmodels.Model``.
-    active_orbitals : sequence of (sequence of str)
-        Per-atom spatial-orbital labels — see :func:`build_active_mask`.
+    win_path : str, optional
+        Path to the matching ``.win`` file. When supplied,
+        ``active_orbitals`` is derived from it automatically via
+        :func:`active_orbitals_from_win`. Required unless you pass
+        ``active_orbitals`` explicitly.
+    active_orbitals : sequence of (sequence of str), optional
+        Explicit per-atom spatial-orbital labels — see
+        :func:`build_active_mask`. Overrides ``win_path`` if both are
+        given. Useful when the user wants to fine-tune on a subspace
+        smaller than the full Wannier projection.
     fermi_shift : float, default 0.0
         Subtract this from on-site diagonal entries to align the
         user's hr Fermi reference with the Tailwater convention.
@@ -292,7 +448,8 @@ def prepare_finetune_target(
       * ``"name"``       : str
       * ``"gdata"``      : PyG ``Data`` with ``edge_targets``
                             already attached and ``node_features``
-                            updated with the user-supplied active mask.
+                            updated with the (user- or .win-derived)
+                            active mask.
       * ``"embed_path"`` : str (the input path, for traceability).
     """
     if not os.path.isfile(embed_path):
@@ -317,14 +474,29 @@ def prepare_finetune_target(
     else:
         hr_model = hr_path_or_model
 
-    # Sanity: atom count must match between API graph and active_orbitals.
+    # Resolve the per-atom active orbital layout.
+    if active_orbitals is None:
+        if win_path is None:
+            raise ValueError(
+                "Either `win_path` or `active_orbitals` must be supplied. "
+                "Pass `win_path` to derive the layout from the Wannier90 "
+                ".win file's projection + atoms_cart blocks automatically, "
+                "or pass `active_orbitals` explicitly to override."
+            )
+        if not os.path.isfile(win_path):
+            raise FileNotFoundError(f"win_path does not point to a file: {win_path!r}")
+        active_orbitals = active_orbitals_from_win(win_path)
+
+    # Sanity: atom count must match between API graph and the resolved layout.
     num_atoms_api = int(gdata.node_features.shape[0])
     if len(active_orbitals) != num_atoms_api:
+        src = (f"`active_orbitals` (explicit)" if win_path is None
+               else f"`win_path`={win_path!r}")
         raise ValueError(
-            f"`active_orbitals` has {len(active_orbitals)} entries but the API "
+            f"{src} describes {len(active_orbitals)} atoms but the API "
             f"embedding describes {num_atoms_api} atoms. They must match — "
-            f"`active_orbitals[a]` describes the spatial orbitals projected "
-            f"in the user's hr for atom `a` of the same structure."
+            f"the .win file used to build the user's hr must be the same "
+            f"structure as the one uploaded to the API."
         )
 
     # Build the (num_edges, 18, 18, 2) target tensor and unsqueeze the

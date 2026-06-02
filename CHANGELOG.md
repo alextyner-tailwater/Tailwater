@@ -3,6 +3,47 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.9]
+
+### Changed
+- **`prepare_finetune_target` now accepts a `.win` file directly** —
+  the per-atom active-orbital layout is parsed straight out of the
+  Wannier90 projection + atoms_cart blocks, using the same
+  convention as the API's server-side `process_win`. Customers no
+  longer need to type per-atom orbital lists by hand:
+
+  ```python
+  item = prepare_finetune_target(
+      embed_path        = "outputs/Bi2Se3_embeddings.pt",
+      hr_path_or_model  = "wannier_data/Bi2Se3_hr.dat",
+      win_path          = "wannier_data/Bi2Se3.win",
+      name              = "Bi2Se3",
+  )
+  ```
+
+  `active_orbitals` remains available as an explicit override for the
+  rare case where the fine-tune should run on a subspace smaller than
+  the full Wannier projection. The signature change is backward
+  compatible — `active_orbitals` is still keyword-accessible — but
+  is no longer required.
+
+### Added
+- **`tailwater.active_orbitals_from_win(win_path)`** — public helper
+  that returns the per-atom spatial-orbital list a .win file implies.
+  Output matches the API server-side convention so customers can use
+  the same layout the API saw at embedding time.
+- **`tailwater.parse_win_projections(win_path)`** and
+  **`tailwater.parse_win_atoms(win_path)`** — lower-level parsers for
+  the projection and atoms_cart blocks. Useful for sanity-checking
+  that the .win the user is fine-tuning against matches the structure
+  they uploaded to the API.
+
+Verified: the parsed active mask matches the active mask stored in
+the API embedding to the bit for the test material (KInTe), and the
+4-epoch CPU smoke run produces an identical training trajectory to
+the explicit-list variant.
+
+
 ## [0.4.8]
 
 ### Added
