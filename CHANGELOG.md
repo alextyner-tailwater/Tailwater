@@ -3,6 +3,52 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.8]
+
+### Added
+- **Multi-material heads fine-tune against user-supplied Wannier
+  targets** — complementing single-material `subspace_projection`,
+  which uses the API's own full-model output as a self-distillation
+  target. The new path lets users refine the heads on a set of N
+  materials whose ground-truth Hamiltonians they computed
+  themselves.
+
+  Three new public symbols (`from tailwater import ...`):
+
+  - `prepare_finetune_target(embed_path, hr_path_or_model,
+    active_orbitals, *, fermi_shift=0.0, out_path=None, name=None)`
+    Merges an API embedding `.pt` with a user-supplied `tbmodels.Model`
+    (or hr-file path), producing a per-material training item whose
+    `gdata.edge_targets` is filled from the user's Hamiltonian and
+    whose `gdata.node_features[:, 109:127]` carries the user's
+    active-orbital mask. Critically, the user's hr need NOT have the
+    full 18 spatial orbitals per atom — each atom can carry an
+    arbitrary subset of `{s, pz, px, py, dz2, dxz, dyz, dx2-y2, dxy}`.
+    The (0,0,0)-block doubling convention is handled transparently
+    so the on-site values in `gdata.edge_targets` are physical.
+
+  - `finetune_heads_multi(train_targets, *, start_lr, end_lr,
+    num_epochs, energy_range, decay_sigma, device, save_path,
+    val_targets=None, val_every=5, loss_mode="subspace",
+    heads_checkpoint=None, h_mse_weight=0.001, eig_weight=1.0,
+    kgrid_n=4, grad_clip=1.0)`
+    Cosine-annealed AdamW over the N training materials per epoch
+    (full-batch gradient accumulation across materials). Subspace
+    eigenvalue loss masked outside `energy_range` per material;
+    optional validation set with mean validation eigenvalue loss
+    reported every `val_every` epochs; best-val checkpoint kept
+    alongside the final one. Saves to
+    `HeadsFT_multi_final.pth` / `HeadsFT_multi_best.pth`.
+
+  - `build_active_mask`, `build_edge_targets_from_hr`,
+    `SPATIAL_LABEL_TO_INDEX` — lower-level building blocks for users
+    who want to bypass `prepare_finetune_target` and stitch their
+    own per-material items together.
+
+  See `examples/10_multi_material_finetune.py` for the canonical
+  recipe.
+
+
 ## [0.4.7]
 
 ### Added

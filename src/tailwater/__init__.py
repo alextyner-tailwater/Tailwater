@@ -33,7 +33,7 @@ checkpoint (HeadsOnly.pth) and HDF5 / .pt artifacts produced by the
 API are needed.
 """
 
-__version__ = "0.4.7"
+__version__ = "0.4.8"
 
 # ---- HTTP client + HDF5 loader ----
 from .client import (
@@ -62,6 +62,15 @@ from .heads_only_model import (
 
 # ---- Subspace fine-tuning ----
 from .finetune_heads import subspace_projection
+
+# ---- Multi-material fine-tuning against user-supplied Wannier targets ----
+from .multi_finetune import (
+    prepare_finetune_target,
+    finetune_heads_multi,
+    build_active_mask,
+    build_edge_targets_from_hr,
+    SPATIAL_LABEL_TO_INDEX,
+)
 
 # ---- Subspace loss helpers (advanced — used by subspace_projection internally) ----
 from .subspace_utils import (
@@ -116,6 +125,10 @@ __all__ = [
     "load_heads_only_checkpoint", "save_heads_only_checkpoint",
     # subspace
     "subspace_projection",
+    # multi-material finetune
+    "prepare_finetune_target", "finetune_heads_multi",
+    "build_active_mask", "build_edge_targets_from_hr",
+    "SPATIAL_LABEL_TO_INDEX",
     "Subspace_H_MSE_Loss", "Subspace_EigLoss", "Eigenvalue_Only_Loss",
     "make_eigenvalue_only_data", "build_subspace_active_mask",
     "write_subspace_basis_file",

@@ -48,6 +48,13 @@ is self-contained and operates on artifacts produced by the API.
        ``wb.calculators.dynamic.OpticalConductivity``, plotted as
        Re/Im parts of the in-plane :math:`\sigma_{xx}` and
        out-of-plane :math:`\sigma_{zz}` channels.
+   * - ``examples/10_multi_material_finetune.py``
+     - Heads-only fine-tune on a SET of (API-embedding,
+       user-Wannier-Hamiltonian) pairs via
+       ``prepare_finetune_target`` + ``finetune_heads_multi``.
+       Subspace eigenvalue loss masked outside a per-run energy
+       window; validation loss reported every N epochs; best-val
+       checkpoint kept alongside the final one.
 
 Each script targets a single workflow stage so customers can pick the
 slice they care about and run it in isolation. They share three
