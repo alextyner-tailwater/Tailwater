@@ -22,6 +22,10 @@ is self-contained and operates on artifacts produced by the API.
    * - ``examples/04_band_structure.py``
      - ``bulk_band_structure`` in manual (custom k-points) and auto
        (seekpath-derived) modes.
+   * - ``examples/05_kwant_scattering.py``
+     - ``model.to_kwant()`` → finite scattering region + two
+       semi-infinite leads → ``kwant.smatrix`` → two-terminal
+       conductance G(E). End-to-end quantum-transport recipe.
 
 Each script targets a single workflow stage so customers can pick the
 slice they care about and run it in isolation. They share three

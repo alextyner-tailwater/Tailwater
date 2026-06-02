@@ -330,9 +330,19 @@ there the user has two natural next steps:
 * **Transport / scattering** — build a finite scattering region on
   top of the bulk Builder, attach leads via
   ``kwant.Builder(kwant.TranslationalSymmetry(...))`` for each lead,
-  and call ``kwant.smatrix`` / ``kwant.greens_function``. See the
-  Kwant tutorial for the full pattern:
-  https://kwant-project.org/doc/
+  and call ``kwant.smatrix`` / ``kwant.greens_function``.
+
+  A complete end-to-end recipe (quantum wire of a Bi\ :sub:`2`\
+  Se\ :sub:`3` hr-model + two semi-infinite leads + G(E) sweep) lives
+  at ``examples/05_kwant_scattering.py``. The full Kwant tutorial is
+  at https://kwant-project.org/doc/.
+
+  One Kwant API quirk to know: ``bulk.symmetry.periods`` is a custom
+  Kwant array class that doesn't support direct integer indexing.
+  Cast to a plain NumPy array first::
+
+    periods = np.asarray(bulk.symmetry.periods)        # (3, 3)
+    sym_x   = kwant.TranslationalSymmetry(periods[0])  # transport axis
 
 Computing a band structure with Kwant
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
