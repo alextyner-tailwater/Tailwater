@@ -380,6 +380,51 @@ The bands are identical to those from ``model.hamilton(k_frac)`` or
 gives you the rest of the transport ecosystem for free.
 
 
+Using the model with WannierBerri
+---------------------------------
+
+WannierBerri (Berry-curvature integrator for transport quantities,
+optical responses, Wannier-charge centres, etc.) reads
+``tbmodels.Model`` directly — no ``model.to_X()`` method needed.
+Just pass the loaded model:
+
+.. code-block:: python
+
+    import wannierberri as wb
+    from tailwater import tb_model
+
+    model  = tb_model.load("wannier90_hr.hdf5")
+    sys_wb = wb.system.System_R.from_tbmodels(model, berry=True)
+
+    grid = wb.Grid(sys_wb, NK=(8, 8, 8), NKFFT=(4, 4, 4))
+
+    Efermi = np.linspace(-3, 3, 61)
+    result = wb.run(
+        sys_wb, grid=grid,
+        calculators={
+            "dos":   wb.calculators.static.DOS           (Efermi=Efermi, tetra=True),
+            "ohmic": wb.calculators.static.Ohmic_FermiSea(Efermi=Efermi),
+            "ahc":   wb.calculators.static.AHC           (Efermi=Efermi),
+        },
+        parallel=False, symmetrize=False, dump_results=False,
+    )
+
+``berry=True`` tells WannierBerri to construct the position matrix
+elements ``<0,n|r|R,m>`` from ``model.pos`` — these are what every
+Berry-curvature-derived calculator (AHC, SHC, optical conductivity,
+Wannier charge centres) needs.
+
+A complete worked recipe with DOS, longitudinal conductivity, and
+AHC vs. Fermi energy is at ``examples/06_wannierberri_conductivity.py``.
+
+WannierBerri brings its own optional dependencies — install them
+explicitly when needed:
+
+.. code-block:: bash
+
+    pip install wannierberri numba   # numba: tetrahedron integration
+
+
 Round-trip: HDF5 → pybinding → HDF5
 -----------------------------------
 

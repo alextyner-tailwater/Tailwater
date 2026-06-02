@@ -26,6 +26,10 @@ is self-contained and operates on artifacts produced by the API.
      - ``model.to_kwant()`` → finite scattering region + two
        semi-infinite leads → ``kwant.smatrix`` → two-terminal
        conductance G(E). End-to-end quantum-transport recipe.
+   * - ``examples/06_wannierberri_conductivity.py``
+     - ``wannierberri.system.System_R.from_tbmodels(model)`` → DOS,
+       Ohmic (longitudinal) conductivity tensor, and anomalous Hall
+       conductivity vs Fermi energy on a uniform MP k-mesh.
 
 Each script targets a single workflow stage so customers can pick the
 slice they care about and run it in isolation. They share three
