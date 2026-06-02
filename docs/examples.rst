@@ -36,6 +36,18 @@ is self-contained and operates on artifacts produced by the API.
        ``SS_R`` from the Tailwater orbital basis), then sweeps the
        intrinsic spin Hall conductivity vs Fermi energy. Plateau in
        the gap is the topological signature.
+   * - ``examples/08_quantum_geometry.py``
+     - Three more static WannierBerri quantities versus Fermi energy
+       on a single sweep: cumulative DOS (carrier-count integral),
+       quantum metric (Fermi-sea integral), and nonlinear Drude
+       conductivity (a centrosymmetric-zero sanity check on Bi\
+       :sub:`2`\ Se\ :sub:`3`).
+   * - ``examples/09_optical_conductivity.py``
+     - Frequency-dependent Kubo optical conductivity
+       :math:`\sigma_{\alpha\beta}(\omega)` from
+       ``wb.calculators.dynamic.OpticalConductivity``, plotted as
+       Re/Im parts of the in-plane :math:`\sigma_{xx}` and
+       out-of-plane :math:`\sigma_{zz}` channels.
 
 Each script targets a single workflow stage so customers can pick the
 slice they care about and run it in isolation. They share three
