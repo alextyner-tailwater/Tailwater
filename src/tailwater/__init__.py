@@ -33,7 +33,7 @@ checkpoint (HeadsOnly.pth) and HDF5 / .pt artifacts produced by the
 API are needed.
 """
 
-__version__ = "0.4.6"
+__version__ = "0.4.7"
 
 # ---- HTTP client + HDF5 loader ----
 from .client import (
@@ -41,6 +41,14 @@ from .client import (
     tb_model,
     remaining_credits,
     k_cart_from_frac,
+)
+
+# ---- WannierBerri helpers (optional, lazy-imports wannierberri) ----
+from .wb_helpers import (
+    wb_system_with_spin,
+    spin_pairs_from_basis_json,
+    spin_pairs_from_model_topology,
+    build_ss_r0,
 )
 
 # ---- Heads-only inference model ----
@@ -100,6 +108,9 @@ __all__ = [
     "__version__",
     # client
     "tw_api_call", "tb_model", "remaining_credits", "k_cart_from_frac",
+    # wannierberri helpers
+    "wb_system_with_spin", "spin_pairs_from_basis_json",
+    "spin_pairs_from_model_topology", "build_ss_r0",
     # heads-only
     "HeadsOnly", "CovariantOnsiteHead", "CovariantEdgeHead",
     "load_heads_only_checkpoint", "save_heads_only_checkpoint",

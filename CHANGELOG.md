@@ -3,6 +3,56 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.7]
+
+### Added
+- **`tailwater.wb_system_with_spin(model, ...)`** — builds a
+  `wannierberri.system.System_R` with spin matrix elements (`SS_R`)
+  populated, enabling spin-resolved calculators (most importantly
+  `wannierberri.calculators.static.SHC`) that WannierBerri's own
+  `System_R.from_tbmodels(spin=True)` doesn't support out of the box.
+  The function exploits the fact that every Wannier function in the
+  Tailwater 18-orbital basis is an exact σ_z eigenstate with the
+  convention `orbital_index = spatial_index * 2 + spin_index` to
+  construct `SS_R[(0,0,0)]` analytically from Pauli matrices.
+
+  Three modes for resolving the σ_z eigenstate doublets, in order of
+  priority:
+
+  1. Caller passes `pairs=[(up_idx, down_idx), ...]` explicitly.
+  2. Caller passes `basis_json_path=...` (the JSON written by
+     `subspace_projection`).
+  3. **(default)** Inferred from the model's atomic-position topology
+     via the new `spin_pairs_from_model_topology(model)` helper:
+     orbitals at the same lattice position are grouped per atom, then
+     paired as consecutive Kramers partners, with an on-site-energy
+     match check.
+
+  Example: end-to-end intrinsic spin Hall conductivity on Bi₂Se₃
+  lands in ~13 s on a laptop and shows the expected in-gap plateau
+  of σ^z_xy ≈ -285 (ℏ/e)·S/cm (canonical SHC topological signature):
+
+  ```python
+  import numpy as np, wannierberri as wb
+  from tailwater import tb_model, wb_system_with_spin
+
+  model = tb_model.load("wannier90_hr.hdf5")
+  sys   = wb_system_with_spin(model)
+
+  Efermi = np.linspace(-2.0, 2.0, 41)
+  grid   = wb.Grid(sys, NK=(8, 8, 8), NKFFT=(4, 4, 4))
+  result = wb.run(sys, grid=grid, calculators={
+      "shc": wb.calculators.static.SHC(
+          Efermi=Efermi,
+          kwargs_formula={"spin_current_type": "simple"},
+      ),
+  }, parallel=False, symmetrize=False, dump_results=False)
+  ```
+
+  See `examples/07_spin_hall_conductivity.py` for a full sweep with
+  the DOS panel for context.
+
+
 ## [0.4.6]
 
 ### Fixed

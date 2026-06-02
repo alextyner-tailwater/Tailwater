@@ -411,11 +411,49 @@ Just pass the loaded model:
 
 ``berry=True`` tells WannierBerri to construct the position matrix
 elements ``<0,n|r|R,m>`` from ``model.pos`` — these are what every
-Berry-curvature-derived calculator (AHC, SHC, optical conductivity,
+Berry-curvature-derived calculator (AHC, optical conductivity,
 Wannier charge centres) needs.
 
 A complete worked recipe with DOS, longitudinal conductivity, and
 AHC vs. Fermi energy is at ``examples/06_wannierberri_conductivity.py``.
+
+Spin Hall conductivity (``SHC`` and friends) need an extra ingredient:
+the spin matrix elements ``<n,0 | S^alpha | m,R>``. WannierBerri's
+``from_tbmodels(..., spin=True)`` is documented but doesn't actually
+populate these — tbmodels carries only the Hamiltonian. Tailwater
+synthesises them from the *known* sigma_z-eigenstate structure of the
+18-orbital Wannier basis via
+:func:`tailwater.wb_system_with_spin`:
+
+.. code-block:: python
+
+    import numpy as np, wannierberri as wb
+    from tailwater import tb_model, wb_system_with_spin
+
+    model = tb_model.load("wannier90_hr.hdf5")
+    sys   = wb_system_with_spin(model)        # SS_R populated; berry=True too
+
+    Efermi = np.linspace(-2.0, 2.0, 41)
+    grid   = wb.Grid(sys, NK=(8, 8, 8), NKFFT=(4, 4, 4))
+    result = wb.run(
+        sys, grid=grid,
+        calculators={
+            "shc": wb.calculators.static.SHC(
+                Efermi=Efermi,
+                kwargs_formula={"spin_current_type": "simple"},
+            ),
+        },
+        parallel=False, symmetrize=False, dump_results=False,
+    )
+    shc = np.asarray(result.results["shc"].data)   # (Nef, 3, 3, 3) in (ℏ/e)·S/cm
+
+The function infers the sigma_z eigenstate doublets from the model's
+geometric structure by default — it walks the atomic positions to
+group Wannier functions by atom, then pairs consecutive Kramers
+partners and verifies their on-site energies match. A worked
+end-to-end recipe with Bi\ :sub:`2`\ Se\ :sub:`3` lives at
+``examples/07_spin_hall_conductivity.py``; the in-gap plateau in
+:math:`\sigma^{z}_{xy}` is the topological signature.
 
 WannierBerri brings its own optional dependencies — install them
 explicitly when needed:

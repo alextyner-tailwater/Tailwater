@@ -30,6 +30,12 @@ is self-contained and operates on artifacts produced by the API.
      - ``wannierberri.system.System_R.from_tbmodels(model)`` → DOS,
        Ohmic (longitudinal) conductivity tensor, and anomalous Hall
        conductivity vs Fermi energy on a uniform MP k-mesh.
+   * - ``examples/07_spin_hall_conductivity.py``
+     - ``tailwater.wb_system_with_spin(model)`` builds an SHC-ready
+       WannierBerri ``System`` (synthesises the spin matrix elements
+       ``SS_R`` from the Tailwater orbital basis), then sweeps the
+       intrinsic spin Hall conductivity vs Fermi energy. Plateau in
+       the gap is the topological signature.
 
 Each script targets a single workflow stage so customers can pick the
 slice they care about and run it in isolation. They share three
