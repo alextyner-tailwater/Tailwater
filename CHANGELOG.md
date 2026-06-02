@@ -3,6 +3,44 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.11]
+
+### Changed
+- **`prepare_finetune_target` and
+  `prepare_finetune_targets_from_directory` now auto-read the
+  Fermi energy from each material's .win file and shift its on-site
+  energies so `E_F = 0`** — matching the convention used to build
+  the training data in `CleanedDataset.ipynb`. The Tailwater model
+  is trained on `E_F = 0`-referenced Hamiltonians, so user fine-tune
+  targets need to follow the same convention; without the shift the
+  loss is dominated by the constant Fermi offset rather than the
+  band-structure detail the user actually wants to refine.
+
+  Per-material, the `fermi_energy` keyword in the .win file
+  (whatever its sign) is subtracted from every on-site diagonal
+  entry before the target tensor is built. The cost is zero — it's a
+  single subtraction on the already-walked entries of
+  `hop[(0,0,0)]`. Both functions print one line per material noting
+  the value that got picked up:
+
+      [prepare_finetune_target] [Bi2Se3] using fermi_energy = -0.432100 eV
+        from wannier90.win (subtracted from on-sites to set E_F = 0)
+
+  Override semantics:
+
+  - `fermi_shift=None` (default) → read `fermi_energy` from each .win.
+  - `fermi_shift=0.0`            → disable shifting entirely.
+  - `fermi_shift=<float>`        → apply that shift to every material,
+                                    ignoring the .win values.
+
+### Added
+- **`tailwater.parse_win_fermi_energy(win_path)`** — public parser
+  that returns the .win's `fermi_energy` (eV) or `None` if absent.
+  Handles all three Wannier90 separator conventions
+  (`fermi_energy = X`, `fermi_energy : X`, `fermi_energy  X`),
+  ignores comments, skips lines inside explicit `begin … end` blocks.
+
+
 ## [0.4.10]
 
 ### Added

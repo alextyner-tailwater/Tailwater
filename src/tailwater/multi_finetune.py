@@ -143,6 +143,56 @@ def parse_win_projections(win_path: str) -> Dict[str, List[str]]:
     return out
 
 
+def parse_win_fermi_energy(win_path: str) -> Optional[float]:
+    """Read the ``fermi_energy`` keyword from a Wannier90 .win file.
+
+    Wannier90 accepts the keyword in several whitespace / punctuation
+    variants — ``fermi_energy = 1.234``, ``fermi_energy 1.234``,
+    ``fermi_energy: 1.234``, all case-insensitive. This helper handles
+    all of them and returns the numeric value (in eV).
+
+    Returns
+    -------
+    float or None
+        The parsed Fermi energy in eV, or ``None`` if the keyword is
+        not present in the file. Lines inside ``begin ... end`` blocks
+        and comment lines (starting with ``!`` or ``#``) are ignored.
+    """
+    import re
+    if not os.path.isfile(win_path):
+        raise FileNotFoundError(f"win_path does not point to a file: {win_path!r}")
+
+    # Strip comments + skip block bodies — fermi_energy is always a
+    # top-level keyword, never inside an explicit begin/end block.
+    in_block = False
+    with open(win_path, "r") as f:
+        for raw in f:
+            line = raw.split("!", 1)[0].split("#", 1)[0].strip()
+            if not line:
+                continue
+            low = line.lower()
+            if low.startswith("begin"):
+                in_block = True; continue
+            if low.startswith("end"):
+                in_block = False; continue
+            if in_block:
+                continue
+            if low.startswith("fermi_energy"):
+                # Strip the keyword and any =/: separator, then grab the
+                # first floating-point token.
+                rest = line[len("fermi_energy"):].lstrip()
+                rest = rest.lstrip(":").lstrip("=").strip()
+                m = re.match(r"([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)", rest)
+                if m is None:
+                    raise ValueError(
+                        f"Found `fermi_energy` keyword in {win_path!r} but "
+                        f"could not parse a numeric value from the rest of "
+                        f"the line: {line!r}."
+                    )
+                return float(m.group(1))
+    return None
+
+
 def parse_win_atoms(win_path: str) -> List[Tuple[str, List[float]]]:
     """Parse the ``begin atoms_cart / end atoms_cart`` block.
 
@@ -387,7 +437,7 @@ def prepare_finetune_target(
     win_path: Optional[str] = None,
     *,
     active_orbitals: Optional[Sequence[Sequence[str]]] = None,
-    fermi_shift: float = 0.0,
+    fermi_shift: Optional[float] = None,
     out_path: Optional[str] = None,
     name: Optional[str] = None,
 ) -> dict:
@@ -431,9 +481,14 @@ def prepare_finetune_target(
         :func:`build_active_mask`. Overrides ``win_path`` if both are
         given. Useful when the user wants to fine-tune on a subspace
         smaller than the full Wannier projection.
-    fermi_shift : float, default 0.0
-        Subtract this from on-site diagonal entries to align the
-        user's hr Fermi reference with the Tailwater convention.
+    fermi_shift : float, optional
+        Subtract this value (in eV) from every on-site diagonal entry
+        so the resulting target has the Tailwater convention
+        (E_F = 0). If left unset (``None``, the default), the value
+        is read from the .win file's ``fermi_energy`` keyword
+        automatically when ``win_path`` is supplied. Pass an explicit
+        float to override (including ``0.0`` to disable shifting
+        entirely).
     out_path : str, optional
         If given, the prepared item is also saved as a ``.pt`` file
         at this path for reuse in subsequent fine-tune runs.
@@ -486,6 +541,21 @@ def prepare_finetune_target(
         if not os.path.isfile(win_path):
             raise FileNotFoundError(f"win_path does not point to a file: {win_path!r}")
         active_orbitals = active_orbitals_from_win(win_path)
+
+    # Resolve fermi_shift: explicit user value > .win `fermi_energy` keyword > 0.
+    if fermi_shift is None:
+        if win_path is not None:
+            ef_win = parse_win_fermi_energy(win_path)
+            if ef_win is not None:
+                fermi_shift = float(ef_win)
+                tag = (f" [{name}]" if name else "")
+                print(f"[prepare_finetune_target]{tag} using fermi_energy = "
+                      f"{fermi_shift:+.6f} eV from {os.path.basename(win_path)} "
+                      f"(subtracted from on-sites to set E_F = 0)")
+            else:
+                fermi_shift = 0.0
+        else:
+            fermi_shift = 0.0
 
     # Sanity: atom count must match between API graph and the resolved layout.
     num_atoms_api = int(gdata.node_features.shape[0])
@@ -558,7 +628,7 @@ def prepare_finetune_targets_from_directory(
     win_patterns:   Sequence[str] = ("*.win",),
     hr_patterns:    Sequence[str] = ("*_hr.dat", "*_hr.hdf5", "*_hr.h5"),
     out_dir:        Optional[str] = None,
-    fermi_shift:    float = 0.0,
+    fermi_shift:    Optional[float] = None,
     strict:         bool  = False,
     sort_names:     bool  = True,
 ) -> List[dict]:
@@ -606,10 +676,15 @@ def prepare_finetune_targets_from_directory(
     out_dir : str, optional
         If given, each prepared item is also saved as
         ``out_dir/{name}_target.pt`` for reuse on subsequent runs.
-    fermi_shift : float, default 0.0
+    fermi_shift : float, optional
         Forwarded to :func:`prepare_finetune_target` for every material.
-        Use this to align the user's hr-model Fermi reference with the
-        Tailwater convention if the hr-files are not already pre-shifted.
+        If left unset (``None``, the default), each material's
+        ``fermi_energy`` keyword in its own .win file is used —
+        every Hamiltonian gets shifted to its own ``E_F = 0`` zero,
+        which is the convention training data follows in
+        ``CleanedDataset.ipynb``. Pass a single float to apply the
+        same shift to every material (overriding the per-.win
+        lookup), or ``0.0`` to disable shifting entirely.
     strict : bool, default False
         If True, raise on the first subdirectory that's missing any of
         the three required files. If False (default), skip that
