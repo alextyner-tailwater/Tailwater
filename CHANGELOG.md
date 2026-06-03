@@ -3,6 +3,52 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.14]
+
+### Fixed
+- **`prepare_finetune_target` now auto-recovers when the
+  directory's `.win` projection block doesn't match the hr-file's
+  actual orbital count** — the typical "fine-tune on materials with
+  restricted projections" case. Previously, customers with hr-files
+  Wannierized using just a subset of the canonical 18-orbital basis
+  (e.g. `W: d` and `Se: p` → 10 + 6 = 16 compact orbs per WSe₂
+  formula unit) hit a `ValueError: Orbital-map size (108) does not
+  match hr_model.size (44)` because the API-style `.win` next to
+  the hr still listed full `s, p, d` projections for the embedding
+  step.
+
+  The loader now falls back to the new
+  `infer_active_orbitals_from_hr` helper whenever the .win-implied
+  orbital count disagrees with `hr_model.size`. The fallback walks
+  the hr-file's per-orbital `model.pos` groupings, counts compact
+  orbitals per atom, and maps to the canonical Wannier shell
+  combination (2 = s, 6 = p, 10 = d, 8 = s+p, 12 = s+d, 16 = p+d,
+  18 = s+p+d). For physically reasonable projections the mapping is
+  unambiguous, so the inferred per-atom shell list matches what
+  `CleanedDatasets.ipynb` derives from a matching .win.
+
+  Both paths produce the same `gdata.edge_targets` for materials
+  where the .win and hr-file agree, so the change is backward
+  compatible. A one-line log message reports which path was taken
+  per material:
+
+      [prepare_finetune_target] [WSe2-mock] .win projection implies 124
+        compact orbitals but the hr-file has 44. Falling back to per-atom
+        shell inference from the hr-file's position groupings — typical
+        when the directory's .win is the API-side full-projection file
+        but the hr was Wannierized with a restricted projection.
+
+### Added
+- **`tailwater.infer_active_orbitals_from_hr(hr_model, *, pos_tol=1e-6)`**
+  — public helper that returns the canonical per-atom spatial-orbital
+  list derived from the hr-file's own structure. Useful when the
+  user wants the orbital layout but does not have (or trust) a
+  matching .win projection block. Raises a clear `ValueError` if any
+  per-atom compact count doesn't match a standard Wannier shell
+  combination, so non-standard projections surface early instead of
+  silently miscoding the targets.
+
+
 ## [0.4.13]
 
 ### Fixed

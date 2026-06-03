@@ -88,6 +88,23 @@ _SHELL_TO_SPATIAL: Dict[str, List[str]] = {
     "d": ["dz2", "dxz", "dyz", "dx2-y2", "dxy"],
 }
 
+# Compact-orbital count per atom → canonical Wannier shell combination.
+# Every standard Wannier projection produces an unambiguous count
+# (s↑↓=2, p↑↓=6, d↑↓=10), so the per-atom orbital count in an hr-file
+# uniquely identifies its shell set. Used as the fallback when the
+# .win's projection block doesn't agree with the hr-file structure
+# (e.g. the user keeps the API-style full-projection .win in the
+# directory but the hr was Wannierized with a restricted projection).
+_COUNT_TO_SHELLS: Dict[int, List[str]] = {
+    2:  ["s"],
+    6:  ["p"],
+    10: ["d"],
+    8:  ["s", "p"],
+    12: ["s", "d"],
+    16: ["p", "d"],
+    18: ["s", "p", "d"],
+}
+
 
 # ---------------------------------------------------------------------
 # Wannier90 .win parsing  (mirrors structure_io.process_win)
@@ -345,6 +362,82 @@ def active_orbitals_from_win(win_path: str) -> List[List[str]]:
             )
         spatial: List[str] = []
         for sh in projections[sym]:
+            spatial.extend(_SHELL_TO_SPATIAL[sh])
+        out.append(spatial)
+    return out
+
+
+def infer_active_orbitals_from_hr(
+    hr_model: tbmodels.Model,
+    *,
+    pos_tol: float = 1e-6,
+) -> List[List[str]]:
+    """Derive per-atom active-orbital labels from the hr-file alone.
+
+    The per-orbital positions in ``hr_model.pos`` group the compact
+    orbitals into atom blocks. Within each block, the number of compact
+    orbitals uniquely identifies the Wannier shell set (2 = s,
+    6 = p, 10 = d, 8 = s+p, 12 = s+d, 16 = p+d, 18 = s+p+d) — the
+    standard combinations every Wannier projection produces.
+
+    This is the canonical fallback when the ``.win`` file in a
+    customer's directory does not match the actual orbital layout of
+    the hr-file (e.g. the user keeps the API-style full-projection
+    ``.win`` next to a Wannierization that used a restricted
+    projection like ``W: d`` / ``Se: p``). The .win-derived layout
+    would imply 18 slots per atom, while the hr-file's per-atom count
+    is smaller — :func:`prepare_finetune_target` detects the mismatch
+    and falls back to this function.
+
+    Args
+    ----
+    hr_model : tbmodels.Model
+        Loaded user Hamiltonian (e.g. via
+        ``tbmodels.Model.from_wannier_files(...)``).
+    pos_tol : float, default 1e-6
+        Position tolerance for grouping orbitals into atom blocks.
+
+    Returns
+    -------
+    list of list of str
+        Same format as :func:`active_orbitals_from_win` — one
+        spatial-orbital list per atom in compact-index order.
+
+    Raises
+    ------
+    ValueError
+        If an atom block has a non-canonical compact count (i.e. not
+        in ``{2, 6, 8, 10, 12, 16, 18}``). Surfaces malformed
+        hr-files or unusual Wannier setups; the user can pass
+        ``active_orbitals`` explicitly to override.
+    """
+    pos = np.asarray(hr_model.pos)
+    n   = int(pos.shape[0])
+    if n == 0:
+        return []
+    # Group consecutive orbitals by position. tbmodels emits orbitals
+    # in row-major (atom, shell, suborb) order, so atoms are contiguous.
+    blocks: List[List[int]] = [[0]]
+    for i in range(1, n):
+        if np.linalg.norm(pos[i] - pos[blocks[-1][-1]]) <= pos_tol:
+            blocks[-1].append(i)
+        else:
+            blocks.append([i])
+
+    out: List[List[str]] = []
+    for block in blocks:
+        count = len(block)
+        if count not in _COUNT_TO_SHELLS:
+            raise ValueError(
+                f"Atom block of size {count} cannot be mapped to a standard "
+                f"Wannier shell combination. Supported per-atom compact "
+                f"counts are: {sorted(_COUNT_TO_SHELLS)} "
+                f"(s↑↓=2, p↑↓=6, d↑↓=10, and their canonical sums). "
+                f"If your model uses a non-standard projection, pass "
+                f"`active_orbitals` explicitly to `prepare_finetune_target`."
+            )
+        spatial: List[str] = []
+        for sh in _COUNT_TO_SHELLS[count]:
             spatial.extend(_SHELL_TO_SPATIAL[sh])
         out.append(spatial)
     return out
@@ -632,17 +725,41 @@ def prepare_finetune_target(
         hr_model = hr_path_or_model
 
     # Resolve the per-atom active orbital layout.
+    #   - Explicit `active_orbitals` always wins.
+    #   - Otherwise, try the .win projection block first.
+    #   - If that disagrees with the hr-file's actual orbital count
+    #     (the typical "the user kept the API-style .win in the
+    #     directory but Wannierized with a restricted projection"
+    #     case), silently fall back to inferring from the hr-file's
+    #     own position groupings.
     if active_orbitals is None:
-        if win_path is None:
-            raise ValueError(
-                "Either `win_path` or `active_orbitals` must be supplied. "
-                "Pass `win_path` to derive the layout from the Wannier90 "
-                ".win file's projection + atoms_cart blocks automatically, "
-                "or pass `active_orbitals` explicitly to override."
-            )
-        if not os.path.isfile(win_path):
-            raise FileNotFoundError(f"win_path does not point to a file: {win_path!r}")
-        active_orbitals = active_orbitals_from_win(win_path)
+        if win_path is not None:
+            if not os.path.isfile(win_path):
+                raise FileNotFoundError(f"win_path does not point to a file: {win_path!r}")
+            try:
+                win_orbitals = active_orbitals_from_win(win_path)
+            except Exception as exc:
+                print(f"[prepare_finetune_target] .win projection block could "
+                      f"not be parsed ({type(exc).__name__}: {exc}); "
+                      f"falling back to hr-file topology.")
+                win_orbitals = None
+            if win_orbitals is not None:
+                expected = sum(2 * len(o) for o in win_orbitals)
+                if expected == int(hr_model.size):
+                    active_orbitals = win_orbitals
+                else:
+                    tag = (f" [{name}]" if name else "")
+                    print(f"[prepare_finetune_target]{tag} .win projection "
+                          f"implies {expected} compact orbitals but the hr-file "
+                          f"has {int(hr_model.size)}. Falling back to per-atom "
+                          f"shell inference from the hr-file's position "
+                          f"groupings — typical when the directory's .win is "
+                          f"the API-side full-projection file but the hr was "
+                          f"Wannierized with a restricted projection.")
+        if active_orbitals is None:
+            # Either no .win path supplied, the parse failed, or the
+            # .win disagreed with the hr — derive from hr topology.
+            active_orbitals = infer_active_orbitals_from_hr(hr_model)
 
     # Resolve fermi_shift: explicit user value > .win `fermi_energy` keyword > 0.
     if fermi_shift is None:
