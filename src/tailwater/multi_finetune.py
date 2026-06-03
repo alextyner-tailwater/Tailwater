@@ -613,10 +613,21 @@ def prepare_finetune_target(
     # Resolve the hr-model
     if isinstance(hr_path_or_model, str):
         path = hr_path_or_model
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"hr file does not exist: {path!r}")
         if path.lower().endswith((".hdf5", ".h5")):
             hr_model = tbmodels.Model.from_hdf5_file(path)
         else:
-            hr_model = tbmodels.Model.from_hr_file(path)
+            # Wannier90 *_hr.dat — tbmodels exposes this via
+            # `from_wannier_files`. Pass the .win file alongside (when
+            # available) so positions get assigned to nearest atoms;
+            # otherwise tbmodels requires a `*_centres.xyz` that
+            # customers rarely keep around.
+            load_kwargs: Dict[str, object] = {"hr_file": path}
+            if win_path is not None and os.path.isfile(win_path):
+                load_kwargs["win_file"] = win_path
+                load_kwargs["pos_kind"] = "nearest_atom"
+            hr_model = tbmodels.Model.from_wannier_files(**load_kwargs)
     else:
         hr_model = hr_path_or_model
 

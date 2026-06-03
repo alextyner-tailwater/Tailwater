@@ -3,6 +3,33 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.13]
+
+### Fixed
+- **`prepare_finetune_target` could not load Wannier90 `_hr.dat`
+  files** — the loader called `tbmodels.Model.from_hr_file(...)`,
+  which is not part of the tbmodels public API. The directory walker
+  surfaced this as a per-material `[skip]` line that read
+  `AttributeError: type object 'Model' has no attribute 'from_hr_file'`
+  on every subdirectory that had a `.dat` instead of an `.hdf5`,
+  even when the rest of the inputs were correct.
+
+  The correct API is `tbmodels.Model.from_wannier_files(hr_file=...)`
+  — the loader now calls that. When the matching `.win` is also
+  available in the same directory, it's passed through as
+  `win_file=win_path, pos_kind='nearest_atom'` so orbital positions
+  get assigned from the .win's `atoms_cart` block rather than
+  requiring an extra `*_centres.xyz`.
+
+  Verified end-to-end with the user's exact failing layout — a
+  subdirectory named `s_-0.04_-0.25` containing `embeddings.pt`,
+  `wannier90.win`, and `wannier90_hr.dat`:
+
+      [ok]   s_-0.04_-0.25: 1088 edges, 124 active orbitals
+             (embed=embeddings.pt, win=wannier90.win, hr=wannier90_hr.dat)
+      Prepared 1 materials.
+
+
 ## [0.4.12]
 
 ### Added
