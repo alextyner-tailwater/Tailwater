@@ -3,6 +3,42 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.15]
+
+### Fixed
+- **`prepare_finetune_targets_from_directory` now prefers
+  `wannier90.win` over `input.win`** when both are present in the
+  same subdirectory.
+
+  Background: the API's embedding endpoint writes its canonical
+  Wannier90 input as `input.win` alongside the embedding `.pt`, while
+  the user's own Wannier90 input — the one used to generate the
+  fine-tune hr-file — is typically named `wannier90.win`. The 0.4.14
+  walker globbed `*.win` and picked alphabetically, so it grabbed
+  `input.win` (the API's full-projection .win) instead of the user's
+  restricted-projection `wannier90.win`. Two failure modes followed:
+
+  1. `tbmodels.Model.from_wannier_files` was called with the wrong
+     .win, leading to all-zero Wannier-centre positions when the
+     API's 8-atom .win didn't agree with the user's 6-atom hr.
+  2. The hr-topology fallback added in 0.4.14 then saw all 44
+     compact orbitals at one position and emitted
+     `Atom block of size 44 cannot be mapped to a standard Wannier
+     shell combination`, even though everything *could* have worked
+     if the right .win had been picked up front.
+
+  The fix flips the default `win_patterns` to
+  ``("wannier90.win", "*.win")`` — exact `wannier90.win` first, any
+  `.win` as fallback. Customers with a custom-named target .win can
+  still override via `win_patterns=("my_target.win", "*.win")`.
+
+  Verified on three layouts:
+
+  - both `wannier90.win` + `input.win` → picks `wannier90.win` ✓
+  - only `input.win`                    → picks `input.win` ✓
+  - only `wannier90.win`                → picks `wannier90.win` ✓
+
+
 ## [0.4.14]
 
 ### Fixed

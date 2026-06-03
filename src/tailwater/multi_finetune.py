@@ -844,7 +844,12 @@ def prepare_finetune_targets_from_directory(
     root_dir: str,
     *,
     embed_patterns: Sequence[str] = ("*embeddings*.pt", "*embedding*.pt"),
-    win_patterns:   Sequence[str] = ("*.win",),
+    # The user's own .win (typically named `wannier90.win`) is the
+    # source of truth for the target's projection block. The API
+    # writes its canonical .win as `input.win` next to the embedding,
+    # so when both are present we want the user's. Glob patterns are
+    # tried in order — exact name `wannier90.win` first, then any .win.
+    win_patterns:   Sequence[str] = ("wannier90.win", "*.win"),
     hr_patterns:    Sequence[str] = ("*_hr.dat", "*_hr.hdf5", "*_hr.h5"),
     out_dir:        Optional[str] = None,
     fermi_shift:    Optional[float] = None,
