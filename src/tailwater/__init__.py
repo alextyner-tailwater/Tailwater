@@ -33,7 +33,7 @@ checkpoint (HeadsOnly.pth) and HDF5 / .pt artifacts produced by the
 API are needed.
 """
 
-__version__ = "0.4.11"
+__version__ = "0.4.12"
 
 # ---- HTTP client + HDF5 loader ----
 from .client import (
@@ -73,7 +73,9 @@ from .multi_finetune import (
     active_orbitals_from_win,
     parse_win_projections,
     parse_win_atoms,
+    parse_win_lattice,
     parse_win_fermi_energy,
+    structure_from_win,
     SPATIAL_LABEL_TO_INDEX,
 )
 
@@ -135,7 +137,7 @@ __all__ = [
     "finetune_heads_multi",
     "build_active_mask", "build_edge_targets_from_hr",
     "active_orbitals_from_win", "parse_win_projections", "parse_win_atoms",
-    "parse_win_fermi_energy",
+    "parse_win_lattice", "parse_win_fermi_energy", "structure_from_win",
     "SPATIAL_LABEL_TO_INDEX",
     "Subspace_H_MSE_Loss", "Subspace_EigLoss", "Eigenvalue_Only_Loss",
     "make_eigenvalue_only_data", "build_subspace_active_mask",

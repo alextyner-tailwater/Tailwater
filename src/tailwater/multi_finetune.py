@@ -184,11 +184,17 @@ def parse_win_fermi_energy(win_path: str) -> Optional[float]:
                 rest = rest.lstrip(":").lstrip("=").strip()
                 m = re.match(r"([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)", rest)
                 if m is None:
-                    raise ValueError(
-                        f"Found `fermi_energy` keyword in {win_path!r} but "
-                        f"could not parse a numeric value from the rest of "
-                        f"the line: {line!r}."
+                    # Template placeholder like `fermi_energy = efermi` —
+                    # treat as "absent" so calling code can default to
+                    # no shift, rather than failing outright.
+                    import warnings as _w
+                    _w.warn(
+                        f"`fermi_energy` keyword in {win_path!r} is not a "
+                        f"numeric value ({line!r}). Treating as absent; "
+                        f"no Fermi shift will be applied for this material.",
+                        RuntimeWarning,
                     )
+                    return None
                 return float(m.group(1))
     return None
 
@@ -220,6 +226,91 @@ def parse_win_atoms(win_path: str) -> List[Tuple[str, List[float]]]:
             f"between `begin atoms_cart` and `end atoms_cart`."
         )
     return atoms
+
+
+def parse_win_lattice(win_path: str) -> np.ndarray:
+    """Parse the ``begin unit_cell_cart / end unit_cell_cart`` block.
+
+    Returns the 3×3 lattice matrix (rows = lattice vectors, Å) from a
+    Wannier90 .win file. The optional units line (``Angstrom`` /
+    ``Bohr``) is recognised and converted to Å — Wannier90's default
+    is Bohr but the convention in Tailwater throughout is Å, so this
+    function always returns Å.
+
+    Raises
+    ------
+    ValueError
+        On a missing or malformed ``unit_cell_cart`` block.
+    """
+    if not os.path.isfile(win_path):
+        raise FileNotFoundError(f"win_path does not point to a file: {win_path!r}")
+    BOHR_TO_ANG = 0.529177210903
+    factor = 1.0
+    vectors: List[List[float]] = []
+    inside = False
+    with open(win_path, "r") as f:
+        for raw in f:
+            line = raw.split("!", 1)[0].split("#", 1)[0].strip()
+            if not line:
+                continue
+            low = line.lower()
+            if low.startswith("begin unit_cell_cart"):
+                inside = True; continue
+            if low.startswith("end unit_cell_cart"):
+                break
+            if not inside:
+                continue
+            if low in ("angstrom", "ang"):
+                factor = 1.0; continue
+            if low == "bohr":
+                factor = BOHR_TO_ANG; continue
+            parts = line.split()
+            if len(parts) >= 3:
+                try:
+                    vectors.append([float(x) for x in parts[-3:]])
+                except ValueError:
+                    pass
+    if len(vectors) != 3:
+        raise ValueError(
+            f"Expected 3 lattice vectors in {win_path!r}, got {len(vectors)}."
+        )
+    return np.array(vectors, dtype=float) * factor
+
+
+def structure_from_win(win_path: str):
+    """Build a :class:`pymatgen.core.structure.Structure` from a .win file.
+
+    Useful when the user wants to hand the structure back to the API
+    (e.g. via :func:`tw_api_call`) without keeping a separate
+    ``Structure.cif`` per material.
+
+    Args
+    ----
+    win_path : str
+        Path to a Wannier90 .win file with ``begin atoms_cart`` and
+        ``begin unit_cell_cart`` blocks.
+
+    Returns
+    -------
+    pymatgen.Structure
+        Constructed from the parsed atoms (Cartesian coordinates) and
+        the parsed lattice (Å). Element order is preserved exactly as
+        in the .win file.
+    """
+    try:
+        from pymatgen.core.structure import Structure
+        from pymatgen.core.lattice   import Lattice
+    except ImportError as exc:
+        raise ImportError(
+            "structure_from_win requires pymatgen: `pip install pymatgen`."
+        ) from exc
+    atoms_list = parse_win_atoms(win_path)
+    lattice    = parse_win_lattice(win_path)
+    species    = [sym for sym, _ in atoms_list]
+    coords     = [pos for _, pos in atoms_list]
+    return Structure(
+        Lattice(lattice), species, coords, coords_are_cartesian=True,
+    )
 
 
 def active_orbitals_from_win(win_path: str) -> List[List[str]]:
@@ -631,6 +722,12 @@ def prepare_finetune_targets_from_directory(
     fermi_shift:    Optional[float] = None,
     strict:         bool  = False,
     sort_names:     bool  = True,
+    generate_embedding: bool = False,
+    user:           Optional[str] = None,
+    password:       Optional[str] = None,
+    embedding_filename: str = "embeddings.pt",
+    force_regenerate: bool = False,
+    api_url:        Optional[str] = None,
 ) -> List[dict]:
     """Auto-discover (embedding, hr, .win) triples from a tree of subdirectories.
 
@@ -692,6 +789,32 @@ def prepare_finetune_targets_from_directory(
     sort_names : bool, default True
         Process subdirectories in sorted-by-name order for reproducible
         training-set ordering.
+    generate_embedding : bool, default False
+        If True, the function makes one API call per subdirectory
+        (using :func:`tw_api_call` with ``return_embeddings=True``) to
+        generate any missing embedding ``.pt`` file. The Structure
+        passed to the API is reconstructed from the subdirectory's
+        own .win file via :func:`structure_from_win`, so the user only
+        needs to drop the (``.win``, hr-file) pair into each
+        subdirectory — the embedding is generated, saved as
+        ``{subdir}/{embedding_filename}``, and then used as the target
+        item like any other.
+    user, password : str, optional
+        HTTP Basic auth credentials for the API. Required when
+        ``generate_embedding=True``; ignored otherwise.
+    embedding_filename : str, default ``"embeddings.pt"``
+        Filename used when saving a generated embedding inside each
+        subdirectory.
+    force_regenerate : bool, default False
+        When ``generate_embedding=True``, controls whether to re-call
+        the API for subdirectories that already have an embedding file
+        (matched by ``embed_patterns``). Default ``False`` is
+        idempotent: existing embeddings are reused, only missing ones
+        are generated. Set to ``True`` to overwrite every embedding.
+    api_url : str, optional
+        Forwarded to :func:`tw_api_call` when ``generate_embedding=True``.
+        Leave unset to hit the production endpoint
+        (``https://api.tailwater.io``).
 
     Returns
     -------
@@ -747,6 +870,75 @@ def prepare_finetune_targets_from_directory(
             f"live in its own subdirectory containing the API embedding, the "
             f"user's .win, and the user's hr-file."
         )
+
+    # ------------------------------------------------------------------
+    # Optional: generate missing embeddings by calling the API
+    # ------------------------------------------------------------------
+    if generate_embedding:
+        if not user or not password:
+            raise ValueError(
+                "generate_embedding=True requires `user` and `password` for "
+                "API authentication. Either pass both or set generate_embedding=False."
+            )
+        # Lazy import — keeps the directory walker importable on hosts
+        # without pymatgen/requests installed for users who just want to
+        # use cached embeddings.
+        from .client import tw_api_call
+
+        print(f"[generate_embedding] scanning {len(subdirs)} subdirectories "
+              f"for materials that need an embedding from the API ...")
+        n_generated = 0
+        n_skipped   = 0
+        for sd in subdirs:
+            name     = os.path.basename(sd)
+            existing = _first_glob_match(sd, embed_patterns)
+            win      = _first_glob_match(sd, win_patterns)
+            if not force_regenerate and existing is not None:
+                n_skipped += 1
+                print(f"  [skip] {name}: embedding already present "
+                      f"({os.path.basename(existing)}) — use force_regenerate=True to override")
+                continue
+            if win is None:
+                msg = (f"{name}: cannot generate embedding without a .win file "
+                       f"(in {sd!r})")
+                if strict:
+                    raise FileNotFoundError(msg)
+                print(f"  [skip] {msg}")
+                continue
+            try:
+                structure = structure_from_win(win)
+            except Exception as exc:
+                if strict:
+                    raise
+                print(f"  [skip] {name}: structure_from_win failed: "
+                      f"{type(exc).__name__}: {exc}")
+                continue
+            embed_stem = os.path.splitext(embedding_filename)[0]
+            api_kwargs = dict(
+                structure         = structure,
+                user              = user,
+                password          = password,
+                output_path       = sd,
+                filename          = embed_stem,
+                return_embeddings = True,
+                save_cif          = False,
+            )
+            if api_url is not None:
+                api_kwargs["api_url"] = api_url
+            print(f"  [api]  {name}: calling /upload_structure_and_download_embeddings/ ...")
+            try:
+                response = tw_api_call(**api_kwargs)
+            except Exception as exc:
+                if strict:
+                    raise
+                print(f"  [fail] {name}: API call failed — {type(exc).__name__}: {exc}")
+                continue
+            saved_path = response.get("embeddings")
+            print(f"  [done] {name}: saved embedding → "
+                  f"{os.path.relpath(saved_path, sd) if saved_path else '?'}")
+            n_generated += 1
+        print(f"[generate_embedding] generated {n_generated} new embedding(s), "
+              f"reused {n_skipped} existing.")
 
     items: List[dict] = []
     skipped: List[Tuple[str, str]] = []

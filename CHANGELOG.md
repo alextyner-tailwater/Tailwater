@@ -3,6 +3,54 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.12]
+
+### Added
+- **`prepare_finetune_targets_from_directory(..., generate_embedding=True,
+  user=..., password=...)`** — the directory walker can now call the
+  API to generate any missing embedding file itself, so the user only
+  needs to drop the (`.win`, `_hr.dat`) pair into each subdirectory:
+
+      datasets/train/
+      ├── Bi2Se3/
+      │   ├── wannier90.win        # required
+      │   └── wannier90_hr.dat     # required
+      ├── Bi2Te3/
+      │   └── ...
+      └── ...
+
+  Per subdirectory, the function reconstructs the Structure from the
+  .win itself (via the new :func:`structure_from_win`) and calls
+  :func:`tw_api_call` with ``return_embeddings=True`` to populate
+  `{subdir}/embeddings.pt`. Subdirectories that already have an
+  embedding are skipped — re-runs don't burn extra credits unless
+  `force_regenerate=True` is passed.
+
+  New related public helpers:
+
+  - `parse_win_lattice(win_path) -> np.ndarray` — the 3×3 lattice
+    matrix from the ``unit_cell_cart`` block (Bohr → Å conversion
+    handled).
+  - `structure_from_win(win_path) -> pymatgen.Structure` — combines
+    `parse_win_atoms` + `parse_win_lattice` into a Structure ready to
+    hand back to `tw_api_call`.
+
+  Lazy import: the API-call code path only fires when
+  `generate_embedding=True`, so users who only need the discovery
+  loop don't need API credentials in scope.
+
+### Fixed
+- **`parse_win_fermi_energy` now warns + returns `None`** instead of
+  raising when it finds a templated `fermi_energy = efermi`
+  placeholder. The previous strict behavior made
+  `prepare_finetune_targets_from_directory` skip whole materials
+  whose .win still carried the placeholder string from
+  `gen_struct` / Wannier90 template generation, even when they
+  otherwise had everything needed for fine-tuning. The new behavior
+  treats an unparseable value as "no shift requested" with a
+  visible `RuntimeWarning`.
+
+
 ## [0.4.11]
 
 ### Changed

@@ -13,27 +13,29 @@ Organise the user's data on disk as one subdirectory per material::
     datasets/
     ├── train/
     │   ├── Bi2Se3/
-    │   │   ├── embeddings.pt        # from `/upload_structure_and_download_embeddings/`
     │   │   ├── wannier90.win        # the user's Wannier90 input
     │   │   └── wannier90_hr.dat     # the user's Wannier hr-file (or `_hr.hdf5`)
     │   ├── Bi2Te3/
-    │   │   ├── embeddings.pt
-    │   │   ├── wannier90.win
-    │   │   └── wannier90_hr.dat
+    │   │   └── ...
     │   └── ...
     └── val/
-        ├── Sb2Te3/
-        │   └── ...
         └── ...
 
-Then a single call discovers every triple, parses the .win to derive
-per-atom orbital layouts, and prepares the per-material training
-items.  The subdirectory name becomes the material name in training
-logs and the cached `.pt` filename.
+Set `GENERATE_EMBEDDING = True` below and the function calls the
+API once per subdirectory to populate the `embeddings.pt`
+automatically — the Structure handed to the API is reconstructed
+from each subdirectory's own .win file.  Existing embeddings are
+reused, so re-runs don't burn extra credits.
+
+If you already have your embeddings in place (e.g. you saved them
+manually from a previous API run), set
+`GENERATE_EMBEDDING = False` and the function just discovers the
+existing files.
 
 The .win projection block (e.g. `Bi: s, p, d` / `Se: s, p`) plus the
 `atoms_cart` block together fully determine the per-atom orbital
-layout — nothing else needed.
+layout; the .win's `fermi_energy` keyword is auto-subtracted from
+on-site energies so every target sits at E_F = 0.
 """
 
 import os
@@ -54,6 +56,10 @@ SAVE_DIR  = "finetune_out"              # final checkpoint lands here
 ENERGY_RANGE = (-2.0, 2.0)              # eV — eigenvalues outside this window are masked
 DEVICE       = "cpu"                     # use "cuda" if available
 
+GENERATE_EMBEDDING = True               # call the API to generate missing embeddings
+API_USER           = "your-username"    # only used if GENERATE_EMBEDDING
+API_PASSWORD       = "your-password"    # only used if GENERATE_EMBEDDING
+
 
 def main():
     os.makedirs(SAVE_DIR, exist_ok=True)
@@ -66,17 +72,16 @@ def main():
     #     object.  Each prepared item is also cached as a .pt under
     #     `CACHE_DIR` so re-running this script is cheap.
     # ------------------------------------------------------------------
-    train_items = prepare_finetune_targets_from_directory(
-        TRAIN_DIR,
-        out_dir = CACHE_DIR,
-        strict  = False,        # skip subdirectories missing any of the 3 files
+    common = dict(
+        out_dir            = CACHE_DIR,
+        strict             = False,        # skip subdirectories missing any of the 3 files
+        generate_embedding = GENERATE_EMBEDDING,
+        user               = API_USER     if GENERATE_EMBEDDING else None,
+        password           = API_PASSWORD if GENERATE_EMBEDDING else None,
     )
 
-    val_items = prepare_finetune_targets_from_directory(
-        VAL_DIR,
-        out_dir = CACHE_DIR,
-        strict  = False,
-    )
+    train_items = prepare_finetune_targets_from_directory(TRAIN_DIR, **common)
+    val_items   = prepare_finetune_targets_from_directory(VAL_DIR,   **common)
 
     # ------------------------------------------------------------------
     # 2)  Multi-material fine-tune
