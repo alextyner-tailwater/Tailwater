@@ -3,6 +3,40 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.16]
+
+### Added
+- **End-to-end "use the fine-tuned heads" section in
+  `examples/10_multi_material_finetune.py`** — after training, the
+  script now:
+
+  1. Reloads the best-val (or final) `HeadsFT_multi_*.pth` checkpoint
+     via `load_heads_only_checkpoint`.
+  2. Runs the heads on the first validation material's API embedding.
+  3. Assembles the resulting `(edge_pred, onsite_pred)` into a
+     `tbmodels.Model` via `build_hr_model_fast` and writes it as
+     `{val_subdir}/{name}_finetuned_hr.hdf5`.
+  4. Plots the bulk band structure on a generic Γ → M → K → Γ path
+     and writes it as `{val_subdir}/{name}_bands_finetuned.png`.
+
+  Also exposes the inference recipe for a brand-new structure (with
+  a fresh `tw_api_call(..., return_embeddings=True)`) as a reference
+  function at the bottom of the script.
+
+### Fixed
+- **macOS conda libomp clash** that segfaulted the example mid
+  band-plot (PyTorch's bundled libomp and the libomp used by
+  numpy / matplotlib racing in the same process). The example now
+  sets `os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"` *before* any
+  torch import and wraps `bulk_band_structure` in
+  `threadpoolctl.threadpool_limits(1)` to pin BLAS to a single
+  thread for the duration. Together these two guards keep the
+  in-process pipeline clean; the example exits 0 cleanly on a
+  vanilla macOS conda environment without any shell env-var
+  preamble. Linux users are unaffected — the guards no-op on
+  systems without the conflict.
+
+
 ## [0.4.15]
 
 ### Fixed
