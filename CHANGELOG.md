@@ -3,6 +3,38 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.17]
+
+### Added
+- **Three-way band-structure comparison in
+  `examples/10_multi_material_finetune.py`** — replaces the
+  fine-tuned-only plot from 0.4.16. After training, the example now
+  computes and overlays bands for three models on a single figure:
+
+  1. **target** (black, solid) — the user's own ``_hr.dat`` /
+     ``_hr.hdf5`` loaded via ``tbmodels.Model.from_wannier_files``,
+     then Fermi-shifted to ``E_F = 0`` via ``align_to_vbm`` using the
+     value parsed by ``parse_win_fermi_energy``. This is the same
+     reference the multi-finetune loss saw during training.
+  2. **pre-tune** (blue, dashed) — the packaged ``HeadsOnly_MACE.pth``
+     run on the same validation embedding *without* any fine-tuning.
+     The "before" picture.
+  3. **post-tune** (red, solid) — the ``HeadsFT_multi_best.pth``
+     produced by ``finetune_heads_multi`` run on the same embedding.
+     The "after" picture.
+
+  All three are computed on a generic Γ → M → K → Γ path inside one
+  ``threadpoolctl.threadpool_limits(1)`` context, then plotted on a
+  single matplotlib axis with distinct line styles. Watching the
+  pre-tune blue dashes shift visibly toward the black target as
+  training progresses is the cleanest single-figure way to validate
+  that the multi-material fine-tune is actually doing something
+  useful on the held-out material.
+
+  Saved as ``{val_subdir}/{name}_bands_comparison.png`` alongside the
+  predicted hr-model from the post-finetune run.
+
+
 ## [0.4.16]
 
 ### Added

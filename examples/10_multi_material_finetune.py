@@ -61,6 +61,7 @@ matplotlib.use("Agg")                                # noqa: E402
 import numpy as np                                   # noqa: E402
 import torch                                         # noqa: E402
 
+import tailwater                                     # noqa: E402
 from tailwater import (                              # noqa: E402
     prepare_finetune_targets_from_directory,
     finetune_heads_multi,
@@ -70,7 +71,11 @@ from tailwater import (                              # noqa: E402
     write_hr_output,
     tb_model,
     bulk_band_structure,
+    align_to_vbm,
+    parse_win_fermi_energy,
 )
+import tbmodels                                      # noqa: E402
+import matplotlib.pyplot as plt                      # noqa: E402
 
 
 # ----------------------------------------------------------------------
@@ -158,76 +163,134 @@ def main():
     #     The example uses path (a) since the directory walker already
     #     produced an embedding for every validation material.
     # ------------------------------------------------------------------
-    best_ckpt = os.path.join(SAVE_DIR, "HeadsFT_multi_best.pth")
-    use_ckpt  = best_ckpt if os.path.isfile(best_ckpt) else final_ckpt
-    print(f"\nLoading fine-tuned heads from {os.path.basename(use_ckpt)} ...")
-    heads = load_heads_only_checkpoint(use_ckpt, map_location=DEVICE).to(DEVICE).eval()
-
     if not val_items:
         print("No validation materials configured — skipping band plot.")
         return
     val_item   = val_items[0]
     val_subdir = os.path.join(VAL_DIR, val_item["name"])
-    print(f"Running heads on '{val_item['name']}' "
-          f"(embedding from {val_item['embed_path']}) ...")
+    print(f"\nBuilding three-way band comparison for '{val_item['name']}':")
+    print(f"  - target     : the user's own hr-file (Fermi-shifted to E_F = 0)")
+    print(f"  - pre-tune   : packaged HeadsOnly_MACE.pth, no fine-tune applied")
+    print(f"  - post-tune  : HeadsFT_multi_best.pth from this run")
 
-    # Re-load the original API embedding for this material so the heads
-    # see the structural metadata (LM, atoms) the API returned. The
-    # `val_items[0]` dict already carries the path back to that .pt.
+    # ------------------------------------------------------------------
+    # 3a)  Load the API embedding once — both head checkpoints get it.
+    # ------------------------------------------------------------------
     emb_pkg = torch.load(val_item["embed_path"], map_location=DEVICE,
                          weights_only=False)
     gdata   = emb_pkg["data"].to(DEVICE)
     LM      = np.asarray(emb_pkg["LM"], dtype=float)
     atoms   = emb_pkg["atoms"]
 
+    # ------------------------------------------------------------------
+    # 3b)  Build the three tbmodels.Model objects to compare.
+    # ------------------------------------------------------------------
+    # (1) Target: the user's own hr-file.  Apply the .win's
+    #     `fermi_energy` to put E_F = 0, matching what the multi-finetune
+    #     loss saw during training.
+    win_path = os.path.join(val_subdir, "wannier90.win")
+    if not os.path.isfile(win_path):
+        # fall back to whatever .win is in the directory (e.g. input.win)
+        win_path = [os.path.join(val_subdir, n) for n in os.listdir(val_subdir)
+                    if n.lower().endswith(".win")][0]
+    hr_path = [os.path.join(val_subdir, n) for n in os.listdir(val_subdir)
+               if n.lower().endswith(("_hr.dat", "_hr.hdf5", "_hr.h5"))
+               and "finetuned" not in n][0]
+    if hr_path.lower().endswith((".hdf5", ".h5")):
+        target_model = tbmodels.Model.from_hdf5_file(hr_path)
+    else:
+        target_model = tbmodels.Model.from_wannier_files(
+            hr_file = hr_path, win_file = win_path, pos_kind = "nearest_atom",
+        )
+    ef = parse_win_fermi_energy(win_path)
+    if ef is not None:
+        target_model = align_to_vbm(target_model, fermi_level=ef)
+        print(f"  target Fermi shift: -{ef:+.4f} eV (from {os.path.basename(win_path)})")
+
+    # (2) Pre-finetune: the packaged HeadsOnly_MACE.pth (no training).
+    default_ckpt = os.path.join(
+        os.path.dirname(tailwater.__file__), "HeadsOnly_MACE.pth",
+    )
+    heads_pre  = load_heads_only_checkpoint(default_ckpt, map_location=DEVICE).to(DEVICE).eval()
     with torch.no_grad():
-        edge_pred, onsite_pred = heads(gdata)
+        edge_pre, onsite_pre = heads_pre(gdata)
+    pretune_model = build_hr_model_fast(edge_pre, onsite_pre, gdata, LM, atoms)
 
-    # Assemble the tbmodels Hamiltonian, then save + reload to detach
-    # cleanly from the fine-tune work and pick up the tb_model.load
-    # wrappers (to_pb, to_pythtb, to_kwant).
+    # (3) Post-finetune: the best-val (or final) HeadsFT_multi checkpoint.
+    best_ckpt = os.path.join(SAVE_DIR, "HeadsFT_multi_best.pth")
+    use_ckpt  = best_ckpt if os.path.isfile(best_ckpt) else final_ckpt
+    heads_post = load_heads_only_checkpoint(use_ckpt, map_location=DEVICE).to(DEVICE).eval()
+    with torch.no_grad():
+        edge_post, onsite_post = heads_post(gdata)
+    posttune_model = build_hr_model_fast(edge_post, onsite_post, gdata, LM, atoms)
+
+    # Save the post-finetune model for downstream use.
     pred_hr_path = os.path.join(val_subdir, f"{val_item['name']}_finetuned_hr.hdf5")
-    pred_model   = build_hr_model_fast(edge_pred, onsite_pred, gdata, LM, atoms)
-    write_hr_output(pred_model, pred_hr_path, fmt="hdf5")
-    print(f"  wrote predicted hr-model → {pred_hr_path}  "
-          f"({pred_model.size} orbitals, {len(pred_model.hop)} R-blocks)")
+    write_hr_output(posttune_model, pred_hr_path, fmt="hdf5")
+    print(f"  wrote post-finetune hr-model → {pred_hr_path}  "
+          f"({posttune_model.size} orbitals)")
 
-    model = tb_model.load(pred_hr_path)
-
-    # Pick a generic high-symmetry path (Γ → M → K → Γ for a hexagonal
-    # cell; adjust to the crystal class you're working with).
+    # ------------------------------------------------------------------
+    # 3c)  Compute bands for all three models on the same k-path and
+    #      overlay them on one figure for direct visual comparison.
+    # ------------------------------------------------------------------
+    # Generic Γ → M → K → Γ path; adjust for your crystal class.
     band_path   = [[0.0, 0.0, 0.0],
                    [0.5, 0.0, 0.0],
                    [0.333, 0.333, 0.0],
                    [0.0, 0.0, 0.0]]
     band_labels = [r"$\Gamma$", "M", "K", r"$\Gamma$"]
 
-    # Wrap the plot call in `threadpoolctl.threadpool_limits(1)` to pin
-    # BLAS to a single thread for the duration. Together with the
-    # `KMP_DUPLICATE_LIB_OK=TRUE` set at the top of this file, this
-    # avoids the macOS-specific SIGSEGV from running BLAS while torch
-    # is still alive in the same process.
+    # `threadpoolctl.threadpool_limits(1)` is the macOS-specific guard
+    # against the OpenMP runtime clash discussed at the top of this
+    # file. No-op on Linux.
     try:
         from threadpoolctl import threadpool_limits
     except ImportError:
         threadpool_limits = None
         print("  [warn] `threadpoolctl` is not installed; on macOS the band "
               "plot below may segfault. Install with `pip install "
-              "threadpoolctl`, or plot the saved hr-file in a fresh process.")
+              "threadpoolctl`.")
 
-    bands_png = os.path.join(val_subdir, f"{val_item['name']}_bands_finetuned.png")
-    plot_ctx  = threadpool_limits(limits=1) if threadpool_limits else _NullCtx()
+    plot_ctx = threadpool_limits(limits=1) if threadpool_limits else _NullCtx()
     with plot_ctx:
-        fig = bulk_band_structure(
-            model,
-            k_points = band_path,
-            k_labels = band_labels,
-            e_range  = ENERGY_RANGE,         # same window the fine-tune optimised
-            spacing  = 0.02,                  # k-spacing in 2π/Å — finer ⇒ smoother
-            verbose  = False,
-        )
+        # Get raw band data (k_dist + eigenvalues) for each model.
+        models_styled = [
+            (target_model,    "target",      "k",       "-",   1.6, 0.9),
+            (pretune_model,   "pre-tune",    "tab:blue","--",  1.0, 0.7),
+            (posttune_model,  "post-tune",   "tab:red", "-",   1.1, 0.85),
+        ]
+        results = []
+        for m, _lbl, _c, _ls, _lw, _al in models_styled:
+            results.append(bulk_band_structure(
+                m, k_points=band_path, k_labels=band_labels,
+                e_range=ENERGY_RANGE, spacing=0.02, verbose=False,
+                return_raw=True,
+            ))
+
+        fig, ax = plt.subplots(figsize=(8.5, 6))
+        for (_, label, color, ls, lw, alpha), res in zip(models_styled, results):
+            kd   = res.k_dist
+            eigs = res.eigenvalues                  # (N_path, num_bands)
+            # First band carries the label; subsequent bands re-use color/style.
+            ax.plot(kd, eigs[:, 0], color=color, ls=ls, lw=lw, alpha=alpha, label=label)
+            for b in range(1, eigs.shape[1]):
+                ax.plot(kd, eigs[:, b], color=color, ls=ls, lw=lw, alpha=alpha)
+        ax.set_xticks(results[0].k_node)
+        ax.set_xticklabels(results[0].k_labels)
+        for x in results[0].k_node:
+            ax.axvline(x, ls=":", color="0.7", lw=0.5)
+        ax.axhline(0.0, ls=":", color="r",   lw=0.5)
+        ax.set_xlim(results[0].k_dist[0], results[0].k_dist[-1])
+        ax.set_ylim(*ENERGY_RANGE)
+        ax.set_ylabel(r"$E - E_F$ (eV)")
+        ax.set_title(f"Band-structure comparison — {val_item['name']}")
+        ax.legend(frameon=False, loc="best")
+        fig.tight_layout()
+
+        bands_png = os.path.join(val_subdir, f"{val_item['name']}_bands_comparison.png")
         fig.savefig(bands_png, dpi=180)
-    print(f"  wrote band-structure plot → {bands_png}")
+    print(f"  wrote band-structure comparison → {bands_png}")
 
 
 # ----------------------------------------------------------------------
