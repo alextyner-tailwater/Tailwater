@@ -173,6 +173,7 @@ def subspace_projection(
     kgrid_n: int = 4,
     h_mse_weight: float = 0.001,
     eig_weight: float = 1.0,
+    symmetrize_targets: bool = True,
 ) -> str:
     """Fine-tune the heads to project a single material into an energy subspace.
 
@@ -332,6 +333,55 @@ def subspace_projection(
 
     KVECS = _build_kgrid(kgrid_n)
 
+    # ---- Decide whether to Kramers-pair the target eigenvalues ----
+    # Pair-averaging consecutive eigenvalues replaces the raw target
+    # spectrum with its minimum-perturbation Kramers-paired version. We
+    # only fire it when the crystal physically supports Kramers
+    # everywhere — i.e. has spatial inversion (P) or a 2-fold rotation
+    # around the c-axis. For non-PT / non-C2zT crystals (Rashba systems,
+    # Weyl semimetals without inversion, polar crystals) the bands at
+    # generic k have *physical* spin splittings and pair-averaging would
+    # corrupt the target.
+    apply_eig_symm = False
+    if symmetrize_targets:
+        try:
+            from .client import _has_kramers_symmetry  # type: ignore[attr-defined]
+        except ImportError:
+            _has_kramers_symmetry = None
+        # Bundled helper might not be available in older SDKs — re-implement
+        # the symmetry check inline using pymatgen.
+        if _has_kramers_symmetry is None:
+            from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+            from pymatgen.core.structure   import Structure as _Structure
+            species = [a[0] for a in atoms]
+            coords  = np.asarray([a[1] for a in atoms], dtype=float)
+            struct  = _Structure(
+                lattice               = np.asarray(LM),
+                species               = species,
+                coords                = coords,
+                coords_are_cartesian  = True,
+            )
+            sga = SpacegroupAnalyzer(struct, symprec=1e-3)
+            has_p   = False
+            has_c2z = False
+            for op in sga.get_symmetry_operations(cartesian=True):
+                rot = op.rotation_matrix
+                if np.allclose(rot, -np.eye(3), atol=1e-3):
+                    has_p = True
+                if np.allclose(rot, np.diag([-1.0, -1.0, 1.0]), atol=1e-3):
+                    has_c2z = True
+                if has_p and has_c2z:
+                    break
+            apply_eig_symm = has_p or has_c2z
+            sg_str = f"{sga.get_space_group_symbol()} ({sga.get_space_group_number()})"
+            print(f"[symm] {sg_str}: has_P={has_p}, has_C2z={has_c2z} "
+                  f"-> symmetrize_targets={'ON' if apply_eig_symm else 'OFF'}")
+        else:
+            info = _has_kramers_symmetry(atoms, lattice=LM)
+            apply_eig_symm = bool(info["kramers_applicable"])
+            print(f"[symm] {info['space_group']} ({info['space_group_number']}): "
+                  f"symmetrize_targets={'ON' if apply_eig_symm else 'OFF'}")
+
     # Move the (single) gdata to device once; reuse across all epochs.
     gdata = gdata.to(device)
 
@@ -359,6 +409,7 @@ def subspace_projection(
                     gdata, edge_pred, onsite_pred,
                     KVECS, NeighBrs, e_lo, e_hi,
                     decay_sigma=decay_sigma,
+                    symmetrize_targets=apply_eig_symm,
                 )
                 loss      = h_mse_weight * hmse + eig_weight * eig
                 eig_value = float(eig.item())

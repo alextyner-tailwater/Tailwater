@@ -489,7 +489,7 @@ def make_eigenvalue_only_data(gdata, kvecs, eigs_per_k, e_lo, e_hi):
 
 def Eigenvalue_Only_Loss(gdata, edge_pred, onsite_pred, e_lo, e_hi,
                          decay_sigma=None, neighbrs_arr=None,
-                         return_diagnostic=False):
+                         return_diagnostic=False, weight_center=None):
     """Eigenvalue-only fine-tuning loss — no target Hamiltonian required.
 
     The customer provides, per material:
@@ -532,6 +532,11 @@ def Eigenvalue_Only_Loss(gdata, edge_pred, onsite_pred, e_lo, e_hi,
     """
     device = edge_pred.device
     center = 0.5 * (e_lo + e_hi)
+    # `wcenter` controls ONLY the Gaussian weighting focus; the band
+    # *selection* below still uses the window midpoint `center` so the
+    # matched band set tracks the window. Pin wcenter on the Fermi level
+    # (or VBM) to emphasize near-Fermi bands inside a wide clean window.
+    wcenter = center if weight_center is None else float(weight_center)
     sigma  = decay_sigma if decay_sigma is not None else (e_hi - e_lo) / 4.0
     inv_two_sigma2 = 1.0 / (2.0 * sigma * sigma)
 
@@ -605,7 +610,7 @@ def Eigenvalue_Only_Loss(gdata, edge_pred, onsite_pred, e_lo, e_hi,
         E_t_paired = E_t_k[:n_pairs]
         E_p_paired = E_p_sub_k[:n_pairs]
 
-        w_k = torch.exp(-((E_t_paired - center) ** 2) * inv_two_sigma2)
+        w_k = torch.exp(-((E_t_paired - wcenter) ** 2) * inv_two_sigma2)
         total_weighted_err = total_weighted_err + (w_k * torch.abs(E_p_paired - E_t_paired)).sum()
         total_weight       = total_weight + w_k.sum()
 
@@ -638,7 +643,8 @@ def _build_full_orbital_mapping(node_features):
 
 def Subspace_EigLoss(gdata, edge_pred, onsite_pred, kvec, NeighBrs_arr,
                      e_lo, e_hi, decay_sigma=None,
-                     return_evals=False, return_diagnostic=False):
+                     return_evals=False, return_diagnostic=False,
+                     symmetrize_targets: bool = False):
     """Eigenvalue loss with FULL-target-band reference, downfolded prediction.
 
     Physics
@@ -734,6 +740,27 @@ def Subspace_EigLoss(gdata, edge_pred, onsite_pred, kvec, NeighBrs_arr,
 
     eig_target_full = torch.linalg.eigvalsh(Hk_target_full)   # [num_k, num_wann]
     eig_pred_sub    = torch.linalg.eigvalsh(Hk_pred_sub)      # [num_k, num_sub]
+
+    # ---- Optionally Kramers-pair the target eigenvalues ----
+    # When the crystal has PT or C₂ᶻT symmetry, every band must be
+    # Kramers-doubly-degenerate, and the raw target predictions usually
+    # break that by tens to hundreds of meV (model noise). Pair-averaging
+    # consecutive ascending eigenvalues here replaces the targets with
+    # their unique minimum-perturbation Kramers-paired version — the
+    # eigenvalue-level equivalent of `light_symmetrize.kramers_fix`.
+    # Caller MUST gate this on symmetry detection (the spectral fix is
+    # wrong for non-PT / non-C2zT crystals — Rashba/Weyl splittings are
+    # physical there and pair-averaging would corrupt the target).
+    if symmetrize_targets:
+        # num_wann is even for spinful models; if it's odd (no-spin or
+        # incomplete pairing), fall through unchanged.
+        n_bands = eig_target_full.shape[-1]
+        if n_bands % 2 == 0:
+            pair_avg = 0.5 * (eig_target_full[..., 0::2]
+                              + eig_target_full[..., 1::2])
+            eig_target_full = torch.stack(
+                [pair_avg, pair_avg], dim=-1,
+            ).reshape(*pair_avg.shape[:-1], 2 * pair_avg.shape[-1])
 
     # ---- Per-k matching ----
     # At each k, filter the FULL target eigenvalues to [e_lo, e_hi], then

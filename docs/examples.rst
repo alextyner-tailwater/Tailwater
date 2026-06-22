@@ -55,6 +55,14 @@ is self-contained and operates on artifacts produced by the API.
        Subspace eigenvalue loss masked outside a per-run energy
        window; validation loss reported every N epochs; best-val
        checkpoint kept alongside the final one.
+   * - ``examples/11_surface_charge_density.py``
+     - ``surface_charge_density`` — general ``(hkl)`` slab from any
+       Wannier ``H(R)`` (Tailwater HDF5 *or* DFT ``wannier90_hr.dat``)
+       → real-space surface charge-density heat maps (top view +
+       side cross-section). ``energy_window=`` isolates
+       near-\ :math:`E_F` states to image topological surface states;
+       ``supercell_self_check`` verifies the supercell remap to machine
+       precision first.
 
 Each script targets a single workflow stage so customers can pick the
 slice they care about and run it in isolation. They share three

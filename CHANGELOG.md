@@ -3,6 +3,49 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0]
+
+### Added
+- **`surface_charge_density`** — real-space surface charge-density heat maps of
+  a general `(hkl)` slab, built directly from a Wannier Hamiltonian's `H(R)`.
+  Accepts any model form: a `tbmodels.Model`, a tbmodels HDF5 path, a DFT
+  Wannier90 `*_hr.dat`, or the dict from the new `load_hr`. Renders a top view
+  (down the surface normal) + a side cross-section; `energy_window=` restricts
+  to near-`E_F` states to image topological surface states. Also exports
+  `load_hr` and `supercell_self_check` (verifies the general-`(hkl)` integer
+  supercell remap reproduces the bulk spectrum to machine precision).
+- **`examples/11_surface_charge_density.py`** + docs page
+  (`docs/api/surface_charge.rst`).
+
+## [0.5.1]
+
+### Added
+- **`symmetrize_targets` on `Subspace_EigLoss` / `subspace_projection`** —
+  pair-averages the target eigenvalues so the fit enforces Kramers degeneracy,
+  gated on detected `P` / `C2z` symmetry (off for non-PT crystals).
+
+## [0.5.0]
+
+### Changed
+- **`symmetrize=True` is now the default on `tw_api_call`** — the standard call
+  returns a Kramers-fixed `wannier90_hr.hdf5` when the crystal has `P` / `C2z`,
+  else the raw model with an explanatory note. The `return_*` flags take
+  precedence over `symmetrize`.
+
+### Added
+- **`model` parameter on `tw_api_call`** (`"V0.0"` / `"V0.1"`, default = server
+  default) to select the inference checkpoint.
+
+## [0.4.18]
+
+### Added
+- **`dev` flag on `tw_api_call`** — pass `dev=True` to opt into the server's
+  canonical-cell position-wrap fix for band structures (sent as a `?dev=true`
+  query param). Corrects bands for structures whose atoms sit on/over the
+  unit-cell boundary (e.g. CIF fractional coords numerically ~1.0), which
+  previously made the finite neighbor-shell sample the wrong periodic images.
+  Default `False` reproduces prior behavior; older servers ignore the flag.
+
 ## [0.4.17]
 
 ### Added

@@ -39,13 +39,21 @@ Two entry points:
                              a dict mapping artifact -> filesystem path.
 
                            * symmetrize = True:
-                             receive a zip containing the symmetrized
-                             tbmodels HDF5 (produced by running
-                             WannSymm on the model's prediction),
-                             alongside the raw pre-symmetrization HDF5
-                             and the wannsymm input/log for provenance.
-                             Costs one credit; the server runs full
-                             inference plus a WannSymm pass.
+                             receive a zip containing a Kramers-degeneracy-
+                             enforced tbmodels HDF5, the raw HDF5, and a
+                             per-k helper script. The server detects spatial
+                             inversion (P) / C2 around z (C₂ᶻ); if present
+                             it applies a minimum-perturbation spectral fix
+                             on an adaptive k-mesh (Δk ≈ 0.1 Å⁻¹ by default)
+                             — bands stay as close to the raw prediction as
+                             possible while doublets become Kramers-paired.
+                             If neither symmetry is present the raw model
+                             is returned unchanged (a note explains why
+                             generic-k splittings must not be averaged
+                             out for non-PT crystals). For exact Kramers
+                             at arbitrary k, call the bundled
+                             `kramers_helper.per_k_kramers_fix(raw, k)`
+                             on the raw HDF5. Costs one credit.
 
                          If multiple flags are True the most expensive
                          request wins:
@@ -113,11 +121,13 @@ def tw_api_call(
     return_input: bool = False,
     return_graph_output: bool = False,
     project: bool = False,
-    symmetrize: bool = False,
+    symmetrize: bool = True,
     api_url: str = DEFAULT_API_URL,
     timeout: float = 600.0,
     save_cif: bool = True,
     keep_zip: bool = False,
+    dev: bool = False,
+    model: Optional[str] = None,
 ):
     """Submit a pymatgen Structure to the API and save the response.
 
@@ -207,18 +217,23 @@ def tw_api_call(
             {"hdf5": "...", "embeddings": "...", "graph_output": "..."}
         Costs one credit per call regardless of how many artifacts.
         Wins over the other `return_*` flags if multiple are True.
-    symmetrize : bool, default False
-        Symmetrization mode. Server runs full inference, writes the
-        predicted Hamiltonian as `<seedname>_hr.dat`, generates a POSCAR
-        and a wannsymm.in (with projections lifted from the canonical
-        .win), invokes WannSymm, and bundles the symmetrized HDF5 +
-        raw HDF5 + wannsymm input/log into a single zip:
-            {"symmed_hdf5": "...", "hdf5": "...", "win": "...",
-             "wannsymm_in": "...", "wannsymm_log": "..."}
-        Costs one credit per call. Use this when downstream
-        post-processing (DOS, band structure, surface states) needs the
-        Hamiltonian to obey the crystal symmetries exactly. Loses to
-        `project` if both are True (project is more comprehensive).
+    symmetrize : bool, default True
+        Kramers-degeneracy enforcement. When True (the default) the
+        server applies the minimum-perturbation spectral fix to the
+        prediction if the crystal has spatial inversion (P) or C2 around
+        z (C₂ᶻ); if not, the raw model is returned unchanged with a note
+        explaining why generic-k splittings (Rashba / Weyl-style) must
+        not be averaged out. Either way you get a single
+        ``wannier90_hr.hdf5`` under the same key, so callers can ignore
+        the symmetry detail and just load ``r["hdf5"]``. The bundle is:
+            {"hdf5":            "...",  # the (possibly Kramers-fixed) model
+             "win":             "...",  # canonical .win
+             "symmetrize_note": "..."}  # symmetry findings + diagnostics
+        Set ``symmetrize=False`` to get the raw prediction (no fix, no
+        symmetry check). Loses to ``project`` and the ``return_*`` flags
+        if any of those is also True. For exact Kramers at arbitrary k
+        (band paths, BZ integration on non-mesh k), hit the PT endpoint
+        directly — it bundles the raw HDF5 + a per-k helper script.
     keep_zip : bool, default False
         When `project=True`, controls whether the downloaded .zip is
         retained after extraction. Default False (delete the zip;
@@ -235,6 +250,25 @@ def tw_api_call(
     save_cif : bool, default True
         If True, also write the structure to ``{output_path}/Structure.cif``.
         Set False to skip.
+    dev : bool, default False
+        Opt into the server's canonical-cell position-wrap fix (sent as
+        ``?dev=true``). Corrects band structures for inputs whose atoms sit
+        on/over the unit-cell boundary (e.g. fractional coords numerically
+        ~1.0). Default False reproduces the current production behavior, and
+        the flag is harmlessly ignored by servers that predate the patch.
+    model : str, optional (default None)
+        Model checkpoint version. When None (the default) the SDK does
+        NOT forward ?model= to the server, so the server's own default
+        applies — i.e. whichever checkpoint the operator most recently
+        promoted to default with DEFAULT_MODEL in RunAPI.py. Pass a
+        specific version string to force a particular checkpoint:
+          * "V0.0" → evMace_Epoch_51.pth (the original GWANN release).
+          * "V0.1" → Mace_FT2_Gaps_Epoch_7.pth (FT2-Gaps fine-tune;
+                      the current production default since 2026-06-15).
+        Unknown versions return 400 with the list of valid choices.
+        Older deployments without the registry silently ignore the flag
+        (FastAPI tolerates unknown query params), so forwarding is
+        backward-safe.
 
     Returns
     -------
@@ -246,9 +280,8 @@ def tw_api_call(
           return_graph_output -> {"graph_output": "...", "win": "..."}
           project      -> {"hdf5": "...", "embeddings": "...",
                            "graph_output": "...", "win": "..."}
-          symmetrize   -> {"symmed_hdf5": "...", "hdf5": "...",
-                           "win": "...", "wannsymm_in": "...",
-                           "wannsymm_log": "..."}
+          symmetrize=True
+            (default)  -> {"hdf5": "...", "win": "...", "symmetrize_note": "..."}
         The ``"win"`` key always points at the canonical wannier90.win
         file the server actually ran inference on — useful for
         reproducing the exact graph the server built from your structure
@@ -281,25 +314,24 @@ def tw_api_call(
             print(f"[tw_api_call] Warning: failed to write Structure.cif: {cif_err}")
 
     # ---- Route to the right endpoint ----
-    # Priority: project > symmetrize > return_input > return_embeddings
-    #           > return_graph_output > full HDF5.
+    # Priority order:
+    #   project > return_input > return_embeddings > return_graph_output
+    #          > symmetrize > raw-HDF5 (symmetrize=False)
     # `project` wins because it's the most expensive/comprehensive
-    # subspace-projection bundle. `symmetrize` sits next: it also
-    # produces a multi-artifact zip (raw + symmetrized HDF5 + the
-    # wannsymm input/log), but it's a different workflow (post-process,
-    # not fine-tune) so it never overlaps with `project` semantically.
-    # Anyone setting either flag is opting into the corresponding bundle,
-    # so we shouldn't silently downgrade.
-    # The server now returns a ZIP for every endpoint — the zip bundles
-    # the primary artifact alongside the canonical `input.win` file that
-    # was actually parsed and run through inference. The client extracts
-    # the zip on receipt and returns a dict of paths (the `.win` key is
-    # always present).
+    # subspace-projection bundle. The `return_*` flags select alternate
+    # output *types* (graph, embeddings, raw model tensors) and beat
+    # `symmetrize`, which only chooses between the Kramers-fixed and the
+    # raw HDF5 of the same primary artifact. With symmetrize=True as the
+    # new default, demoting it below the return_* flags is required —
+    # otherwise every call to e.g. return_embeddings would silently get
+    # symmetrized HDF5 instead of the requested embeddings.
+    # The server returns a ZIP for every endpoint — the zip bundles the
+    # primary artifact alongside the canonical `input.win` file that was
+    # actually parsed and run through inference. The client extracts the
+    # zip on receipt and returns a dict of paths (the `.win` key is always
+    # present).
     if project:
         endpoint        = _ENDPOINT_PROJECT_ZIP
-        primary_arcname = None       # multiple primary artifacts in this bundle
-    elif symmetrize:
-        endpoint        = _ENDPOINT_SYMMETRIZED_ZIP
         primary_arcname = None       # multiple primary artifacts in this bundle
     elif return_input:
         endpoint        = _ENDPOINT_INPUT_PT
@@ -310,16 +342,41 @@ def tw_api_call(
     elif return_graph_output:
         endpoint        = _ENDPOINT_GRAPH_OUTPUT_PT
         primary_arcname = "graph_output.pt"
+    elif symmetrize:
+        # Default branch — Kramers-fixed HDF5 named with the standard
+        # primary arcname so callers see one "wannier90_hr.hdf5" file
+        # regardless of whether the server applied the spectral fix.
+        endpoint        = _ENDPOINT_SYMMETRIZED_ZIP
+        primary_arcname = "wannier90_hr.hdf5"
     else:
         endpoint        = _ENDPOINT_FULL_HDF5
         primary_arcname = "wannier90_hr.hdf5"
     out_file_path = os.path.join(output_path, filename + ".zip")
 
     # ---- POST with streaming so large HDF5 / .pt files don't OOM ----
-    files = {"file": ("structure.json", payload_bytes, "application/json")}
+    # `dev=True` opts into the server's canonical-cell position-wrap fix for
+    # band structures (sent as a ?dev=true query param, leaving the multipart
+    # body untouched). Omitted when False so default requests are byte-identical
+    # to the pre-flag client, and harmlessly ignored by servers without the
+    # dev-flag patch deployed.
+    files  = {"file": ("structure.json", payload_bytes, "application/json")}
+    params = {}
+    if dev:
+        params["dev"] = "true"
+    if model is not None:
+        # Always forward `model` when set — even when the caller asked for
+        # V0.0 — because the server's default can change (e.g. when the
+        # operator promotes a new release to default, an unforwarded
+        # V0.0 request would silently return the new default instead).
+        # Old server builds without the registry tolerate unknown query
+        # params (FastAPI ignores them by default), so forwarding is
+        # backward-safe.
+        params["model"] = model
+    params = params or None
     response = requests.post(
         api_url.rstrip("/") + endpoint,
         files   = files,
+        params  = params,
         auth    = (user, password),
         timeout = timeout,
         stream  = True,
@@ -361,12 +418,18 @@ def tw_api_call(
     # Map server-side arcnames -> friendly dict keys the caller sees.
     _ARCNAME_TO_KEY = {
         "wannier90_hr.hdf5":         "hdf5",
-        "wannier90_symmed_hr.hdf5":  "symmed_hdf5",
         "embeddings.pt":             "embeddings",
         "graph_output.pt":           "graph_output",
         "gnn_input.pt":              "input",
         "input.win":                 "win",
-        "wannsymm.in":                "wannsymm_in",
+        "symmetrize.note":           "symmetrize_note",
+        # The PT endpoint (power-user variant) still bundles these:
+        "kramers_helper.py":         "kramers_helper",
+        # Kept for backward-compatibility with cached zips from older
+        # server builds; new server bundles no longer include any of
+        # these arcnames.
+        "wannier90_symmed_hr.hdf5":  "symmed_hdf5",
+        "wannsymm.in":               "wannsymm_in",
         "wannsymm.out":              "wannsymm_log",
     }
 

@@ -35,6 +35,10 @@ Three workflow layers
      - ``BulkDOS`` / ``SurfaceGreensFunction`` / ``FermiArcMap`` /
        ``BandStructure`` — band-structure, DOS, surface-state, and
        Fermi-arc analyses on the HDF5 model.
+   * - :doc:`Surface charge density <api/surface_charge>`
+     - ``surface_charge_density`` — real-space surface charge-density
+       heat maps of a general ``(hkl)`` slab, from any Wannier
+       ``H(R)`` (Tailwater HDF5 or DFT ``wannier90_hr.dat``).
 
 ----
 
@@ -107,6 +111,7 @@ Quick start
    api/finetune_heads
    api/hr_export
    api/wannier_wizard
+   api/surface_charge
    api/constants
 
 

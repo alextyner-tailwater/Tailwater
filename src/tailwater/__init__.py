@@ -33,7 +33,7 @@ checkpoint (HeadsOnly.pth) and HDF5 / .pt artifacts produced by the
 API are needed.
 """
 
-__version__ = "0.4.17"
+__version__ = "0.6.0"
 
 # ---- HTTP client + HDF5 loader ----
 from .client import (
@@ -117,6 +117,13 @@ from .wannier_wizard import (
     align_to_vbm,
 )
 
+# ---- Surface charge-density heat maps (general (hkl) slab from any H(R)) ----
+from .surface_charge import (
+    surface_charge_density,
+    load_hr,
+    supercell_self_check,
+)
+
 # ---- Constants (rarely needed directly; exposed for advanced users) ----
 from .constants import NeighBrs, NUM_ELEMENTS
 
@@ -155,6 +162,8 @@ __all__ = [
     "BandStructureResult",
     "generate_k_path", "bulk_band_structure",
     "compute_band_edges", "align_to_vbm",
+    # surface charge density
+    "surface_charge_density", "load_hr", "supercell_self_check",
     # constants
     "NeighBrs", "NUM_ELEMENTS",
 ]
