@@ -3,6 +3,17 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0]
+
+### Changed
+- **Packaged `HeadsOnly_MACE.pth` rebuilt from the V0.2 backbone**
+  (`evMace_MAE_Epoch_52`). The production API default model is now V0.2, so
+  the embeddings it returns come from the V0.2 backbone; the bundled
+  fine-tune starting heads are regenerated from the same checkpoint so
+  `subspace_projection` / `finetune_heads_multi` see head weights that match
+  those embeddings. (Customers who request embeddings with `?model=V0.0` /
+  `?model=V0.1` should pair them with the matching heads.)
+
 ## [0.7.0]
 
 ### Changed
