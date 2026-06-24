@@ -121,7 +121,7 @@ def tw_api_call(
     return_input: bool = False,
     return_graph_output: bool = False,
     project: bool = False,
-    symmetrize: bool = True,
+    symmetrize: bool = False,
     api_url: str = DEFAULT_API_URL,
     timeout: float = 600.0,
     save_cif: bool = True,
@@ -217,15 +217,15 @@ def tw_api_call(
             {"hdf5": "...", "embeddings": "...", "graph_output": "..."}
         Costs one credit per call regardless of how many artifacts.
         Wins over the other `return_*` flags if multiple are True.
-    symmetrize : bool, default True
-        Kramers-degeneracy enforcement. When True (the default) the
-        server applies the minimum-perturbation spectral fix to the
-        prediction if the crystal has spatial inversion (P) or C2 around
-        z (C₂ᶻ); if not, the raw model is returned unchanged with a note
-        explaining why generic-k splittings (Rashba / Weyl-style) must
-        not be averaged out. Either way you get a single
-        ``wannier90_hr.hdf5`` under the same key, so callers can ignore
-        the symmetry detail and just load ``r["hdf5"]``. The bundle is:
+    symmetrize : bool, default False
+        Kramers-degeneracy enforcement. When True the server applies the
+        minimum-perturbation spectral fix to the prediction if the
+        crystal has spatial inversion (P) or C2 around z (C₂ᶻ); if not,
+        the raw model is returned unchanged with a note explaining why
+        generic-k splittings (Rashba / Weyl-style) must not be averaged
+        out. Either way you get a single ``wannier90_hr.hdf5`` under the
+        same key, so callers can ignore the symmetry detail and just
+        load ``r["hdf5"]``. With ``symmetrize=True`` the bundle is:
             {"hdf5":            "...",  # the (possibly Kramers-fixed) model
              "win":             "...",  # canonical .win
              "symmetrize_note": "..."}  # symmetry findings + diagnostics
@@ -321,10 +321,9 @@ def tw_api_call(
     # subspace-projection bundle. The `return_*` flags select alternate
     # output *types* (graph, embeddings, raw model tensors) and beat
     # `symmetrize`, which only chooses between the Kramers-fixed and the
-    # raw HDF5 of the same primary artifact. With symmetrize=True as the
-    # new default, demoting it below the return_* flags is required —
-    # otherwise every call to e.g. return_embeddings would silently get
-    # symmetrized HDF5 instead of the requested embeddings.
+    # raw HDF5 of the same primary artifact. `symmetrize` defaults to
+    # False, so a plain call falls through to the raw-HDF5 endpoint; pass
+    # `symmetrize=True` to route to the Kramers-fixed endpoint instead.
     # The server returns a ZIP for every endpoint — the zip bundles the
     # primary artifact alongside the canonical `input.win` file that was
     # actually parsed and run through inference. The client extracts the

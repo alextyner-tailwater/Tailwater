@@ -3,6 +3,14 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0]
+
+### Changed
+- **`symmetrize` now defaults to `False` on `tw_api_call`** (was `True` in
+  0.5.0–0.6.0). A plain call returns the raw prediction again; pass
+  `symmetrize=True` to route to the Kramers-fixed endpoint. This is a
+  client-side routing default only — the server endpoints are unchanged.
+
 ## [0.6.0]
 
 ### Added
