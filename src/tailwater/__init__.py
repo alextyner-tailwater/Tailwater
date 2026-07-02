@@ -27,13 +27,25 @@ Three workflow layers:
    PythTB (fractional k natively), and ``model.to_kwant()`` for Kwant
    (use ``2π·k_frac`` with the wraparound ``k_x/k_y/k_z`` params).
 
+4. SPARSE HAMILTONIANS — when the optimized backend returns a sparse
+   ``wannier90_hr.npz`` (large systems; O(N) egress), ``tw_api_call``
+   auto-converts small systems (<30 atoms) to HDF5 and keeps large ones
+   sparse. Load one with ``SparseHR.load("wannier90_hr.npz")``. The
+   format-detecting converters ``to_pb`` / ``to_pythtb`` / ``to_kwant`` /
+   ``to_hr_dat`` / ``to_hdf5`` / ``as_tbmodels`` accept EITHER a sparse
+   ``.npz`` / ``SparseHR`` or a dense ``.hdf5`` / ``_hr.dat`` /
+   ``tbmodels.Model`` and dispatch automatically, so the same call works
+   regardless of format:
+        from tailwater import to_hr_dat
+        to_hr_dat("wannier90_hr.npz", "wannier90_hr.dat")
+
 The package is self-contained — it does NOT require the proprietary
 backbone weights or training code. Only the customer-shippable head
 checkpoint (HeadsOnly.pth) and HDF5 / .pt artifacts produced by the
 API are needed.
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 # ---- HTTP client + HDF5 loader ----
 from .client import (
@@ -99,6 +111,17 @@ from .hr_export import (
     write_hr_output,
 )
 
+# ---- Sparse H(R) (optimized-inference .npz) + format-detecting converters ----
+from .sparse import SparseHR
+from .convert import (
+    to_pb,
+    to_pythtb,
+    to_kwant,
+    to_hr_dat,
+    to_hdf5,
+    as_tbmodels,
+)
+
 # ---- Post-processing (KPM / Lopez-Sancho / Fermi-arc / bands) ----
 from .wannier_wizard import (
     BulkDOS,
@@ -154,6 +177,9 @@ __all__ = [
     "SPATIAL_BASIS_LABELS", "SPIN_BASIS_LABELS",
     # tbmodels assembly
     "build_hr_model", "build_hr_model_fast", "write_hr_output",
+    # sparse H(R) + format-detecting converters
+    "SparseHR",
+    "to_pb", "to_pythtb", "to_kwant", "to_hr_dat", "to_hdf5", "as_tbmodels",
     # post-processing
     "BulkDOS", "SurfaceSpectralDensity", "SurfaceGreensFunction",
     "FermiArcMap", "BandStructure",

@@ -110,6 +110,31 @@ _ENDPOINT_GRAPH_OUTPUT_PT = "/upload_structure_and_download_graph_output/"
 _ENDPOINT_PROJECT_ZIP     = "/upload_structure_and_download_project/"
 _ENDPOINT_SYMMETRIZED_ZIP = "/upload_structure_and_download_symmetrized/"
 
+# Small systems (fewer than this many atoms) that came back as a sparse .npz are
+# auto-converted to dense tbmodels HDF5 client-side, so existing HDF5-based
+# workflows keep working unchanged. Larger systems stay sparse (see the note).
+_SMALL_SYSTEM_MAX_ATOMS = 30
+
+# Printed for large systems returned in sparse .npz form (no dense HDF5 written).
+# `{npz}` is the on-disk path of the returned wannier90_hr.npz.
+_LARGE_SYSTEM_NOTE = """\
+This is a large system. The Hamiltonian has been returned in sparse matrix \
+format as wannier90_hr.npz. It can be converted to wannier90_hr.dat format with \
+this command
+    from tailwater import to_hr_dat
+    to_hr_dat("{npz}", "wannier90_hr.dat")
+or TBModels hdf5 format with this command
+    from tailwater import to_hdf5
+    to_hdf5("{npz}", "wannier90_hr.hdf5")
+but maintaining sparsity is recommended, analysis can be performed via \
+Pybinding/Kwant. Form a Pybinding model with
+    from tailwater import to_pb
+    pb_model = to_pb("{npz}")
+form a Kwant model with
+    from tailwater import to_kwant
+    kwant_builder, kwant_lattice = to_kwant("{npz}")\
+"""
+
 
 def tw_api_call(
     structure: Structure,
@@ -128,6 +153,7 @@ def tw_api_call(
     keep_zip: bool = False,
     dev: bool = False,
     model: Optional[str] = None,
+    output_format: str = "auto",
 ):
     """Submit a pymatgen Structure to the API and save the response.
 
@@ -269,19 +295,46 @@ def tw_api_call(
         Older deployments without the registry silently ignore the flag
         (FastAPI tolerates unknown query params), so forwarding is
         backward-safe.
+    output_format : str, default "auto"
+        How the full-inference / ``project`` Hamiltonian is transported and
+        delivered. Sent to the server as ``?format=`` for the H(R)-returning
+        endpoints; a server that predates the sparse backend ignores it and
+        returns dense HDF5, so every mode degrades cleanly.
+          * "auto"   (default) — request the sparse ``wannier90_hr.npz`` (O(N)
+                     egress). SMALL systems (< 30 atoms) are then converted to
+                     ``wannier90_hr.hdf5`` client-side and returned under the
+                     ``"hdf5"`` key exactly as before (the ``.npz`` is KEPT too,
+                     under ``"npz"``). LARGE systems are left sparse — returned
+                     under ``"npz"`` — with a printed note on how to convert or
+                     analyse them (pybinding / Kwant / ``_hr.dat`` / HDF5).
+          * "sparse" — always keep the raw ``.npz`` (no client-side HDF5
+                     conversion), whatever the system size. Returned under
+                     ``"npz"``.
+          * "hdf5"   — always deliver dense tbmodels HDF5 (server-side for
+                     small systems; client-side conversion of any ``.npz`` as a
+                     fallback). May fail / OOM for very large systems — that is
+                     what sparsity is for.
+        Only affects the default full-inference and ``project`` modes; the
+        ``return_*`` / ``symmetrize`` modes ignore it.
 
     Returns
     -------
     dict
         Always a dict. Keys depend on the mode:
-          default      -> {"hdf5":         "...", "win": "..."}
+          default (small, auto) -> {"hdf5": "...", "npz": "...", "win": "..."}
+          default (large/sparse)-> {"npz":  "...", "win": "..."}
           return_input -> {"input":        "...", "win": "..."}
           return_embeddings   -> {"embeddings":   "...", "win": "..."}
           return_graph_output -> {"graph_output": "...", "win": "..."}
-          project      -> {"hdf5": "...", "embeddings": "...",
-                           "graph_output": "...", "win": "..."}
+          project      -> {"npz": "...", "embeddings": "...", "win": "..."}
+                          (small systems also get a converted "hdf5")
           symmetrize=True
             (default)  -> {"hdf5": "...", "win": "...", "symmetrize_note": "..."}
+        With the sparse backend the raw Hamiltonian is always available under
+        ``"npz"`` (a :class:`tailwater.SparseHR`); ``"hdf5"`` is additionally
+        present whenever a dense conversion was made (small systems, or
+        ``output_format="hdf5"``). Against a pre-sparse server only ``"hdf5"``
+        is returned, as before.
         The ``"win"`` key always points at the canonical wannier90.win
         file the server actually ran inference on — useful for
         reproducing the exact graph the server built from your structure
@@ -296,6 +349,11 @@ def tw_api_call(
         On any other non-2xx response — surfaces the server's detail
         message for debugging.
     """
+    output_format = (output_format or "auto").lower()
+    if output_format not in ("auto", "sparse", "hdf5"):
+        raise ValueError(
+            f"output_format must be 'auto', 'sparse', or 'hdf5'; got "
+            f"{output_format!r}.")
     os.makedirs(output_path, exist_ok=True)
 
     # ---- Serialize the structure in memory ----
@@ -371,6 +429,13 @@ def tw_api_call(
         # params (FastAPI ignores them by default), so forwarding is
         # backward-safe.
         params["model"] = model
+    if endpoint in (_ENDPOINT_FULL_HDF5, _ENDPOINT_PROJECT_ZIP):
+        # H(R)-returning endpoints honor ?format=. `auto`/`sparse` request the
+        # sparse .npz (O(N) egress; auto then converts small systems to HDF5
+        # client-side); `hdf5` requests the dense HDF5 directly. A server that
+        # predates the sparse backend ignores the param and returns HDF5, so
+        # `auto` degrades cleanly to the classic behavior — no client break.
+        params["format"] = "hdf5" if output_format == "hdf5" else "sparse"
     params = params or None
     response = requests.post(
         api_url.rstrip("/") + endpoint,
@@ -417,6 +482,8 @@ def tw_api_call(
     # Map server-side arcnames -> friendly dict keys the caller sees.
     _ARCNAME_TO_KEY = {
         "wannier90_hr.hdf5":         "hdf5",
+        "wannier90_hr.npz":          "npz",
+        "meta.json":                 "meta",
         "embeddings.pt":             "embeddings",
         "graph_output.pt":           "graph_output",
         "gnn_input.pt":              "input",
@@ -444,6 +511,39 @@ def tw_api_call(
             os.remove(out_file_path)
         except OSError:
             pass
+
+    # ---- Sparse (.npz) post-processing ----
+    # The optimized backend returns the Hamiltonian as a sparse
+    # `wannier90_hr.npz` (O(N) egress) whenever the caller asked for it
+    # (output_format in {"auto", "sparse"}). Downstream tooling still largely
+    # expects dense tbmodels HDF5, so:
+    #   * SMALL systems (< _SMALL_SYSTEM_MAX_ATOMS atoms), or output_format
+    #     == "hdf5", are auto-converted to wannier90_hr.hdf5 right here so the
+    #     ".npz -> HDF5" step is invisible to the caller — r["hdf5"] just works.
+    #     The .npz is KEPT alongside it.
+    #   * LARGE systems are left sparse (a dense HDF5 could be enormous / OOM),
+    #     and a note is printed explaining how to convert or analyse it.
+    # A server that predates the sparse backend returns HDF5 directly, so
+    # "npz" is absent and this whole block is skipped — classic behavior.
+    if "npz" in extracted_paths:
+        from .sparse import SparseHR
+        npz_path = extracted_paths["npz"]
+        n_atoms = len(structure)
+        is_small = n_atoms < _SMALL_SYSTEM_MAX_ATOMS
+        want_hdf5 = output_format == "hdf5" or (output_format == "auto" and is_small)
+        if want_hdf5:
+            hdf5_path = os.path.join(output_path, "wannier90_hr.hdf5")
+            try:
+                SparseHR.load(npz_path).to_hdf5(hdf5_path)
+                extracted_paths["hdf5"] = hdf5_path      # .npz kept as well
+            except Exception as conv_err:
+                # Conversion failed (e.g. num_wann over the dense guard). Fall
+                # back to leaving it sparse and telling the caller why.
+                print(f"[tw_api_call] Could not convert {os.path.basename(npz_path)}"
+                      f" to dense HDF5 ({conv_err}); returning sparse .npz.")
+                print(_LARGE_SYSTEM_NOTE.format(npz=npz_path))
+        elif not is_small:
+            print(_LARGE_SYSTEM_NOTE.format(npz=npz_path))
 
     return extracted_paths
 

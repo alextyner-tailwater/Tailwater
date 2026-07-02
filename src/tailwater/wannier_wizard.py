@@ -1666,6 +1666,7 @@ class BandStructure:
         fermi_level: float = 0.0,
         e_range: Optional[Tuple[float, float]] = None,
         verbose: bool = True,
+        linewidth: float = 1.6,
     ):
         self.model = _load_model(model_or_path)
         try:
@@ -1685,6 +1686,7 @@ class BandStructure:
         self.fermi_level = float(fermi_level)
         self.e_range     = e_range
         self.verbose     = bool(verbose)
+        self.linewidth   = float(linewidth)
 
     @classmethod
     def auto(
@@ -1696,6 +1698,7 @@ class BandStructure:
         e_range: Optional[Tuple[float, float]] = None,
         with_time_reversal: bool = True,
         verbose: bool = True,
+        linewidth: float = 1.6,
     ) -> "BandStructure":
         """Build a BandStructure whose k-path is determined by `seekpath`.
 
@@ -1714,6 +1717,7 @@ class BandStructure:
             fermi_level = fermi_level,
             e_range     = e_range,
             verbose     = verbose,
+            linewidth   = linewidth,
         )
 
     def run(self) -> BandStructureResult:
@@ -1765,13 +1769,17 @@ class BandStructure:
         eigenvalues: np.ndarray,
     ) -> Figure:
         fig, ax = plt.subplots(figsize=(8, 6))
-        # Plot every band as a separate line (matplotlib auto-cycles colors)
+        # Plot every band as a separate line. Default line width matches the
+        # WannierTools gnuplot bulkek convention (`w lp lw 2`) for a bolder,
+        # publication-style band plot; override via BandStructure(linewidth=...).
+        lw = self.linewidth
         for b in range(eigenvalues.shape[1]):
-            ax.plot(k_dist, eigenvalues[:, b], lw=1.0, c="k", alpha=0.85)
+            ax.plot(k_dist, eigenvalues[:, b], lw=lw, c="k", alpha=1.0)
         # Vertical separator at every high-symmetry node
         for x in k_node:
-            ax.axvline(x, color="0.6", lw=0.6, ls="--")
-        ax.axhline(0.0, color="red", lw=0.6, ls=":")
+            ax.axvline(x, color="0.6", lw=0.8, ls="--")
+        # E_F reference line — solid and as bold as the bands (gnuplot `0 w l lw 2`)
+        ax.axhline(0.0, color="red", lw=lw, ls="-")
         ax.set_xlim(float(k_dist[0]), float(k_dist[-1]))
         if self.e_range is not None:
             ax.set_ylim(*self.e_range)
@@ -1797,6 +1805,7 @@ def bulk_band_structure(
     return_raw: bool = False,
     verbose: bool = True,
     with_time_reversal: bool = True,
+    linewidth: float = 1.6,
 ):
     """Compute the bulk band structure of a tight-binding model along a k-path.
 
@@ -1840,6 +1849,10 @@ def bulk_band_structure(
         Toggle the tqdm progress bar.
     with_time_reversal : bool
         Passed to seekpath in auto mode.
+    linewidth : float, default 1.6
+        Band line width (and E_F reference line width). The default matches
+        the WannierTools gnuplot bulkek convention (`w lp lw 2`) for a bolder,
+        publication-style plot; lower it (e.g. 1.0) for dense band manifolds.
 
     Returns
     -------
@@ -1857,6 +1870,7 @@ def bulk_band_structure(
             e_range            = e_range,
             with_time_reversal = with_time_reversal,
             verbose            = verbose,
+            linewidth          = linewidth,
         )
     else:
         if k_points is None:
@@ -1872,6 +1886,7 @@ def bulk_band_structure(
             fermi_level = fermi_level,
             e_range     = e_range,
             verbose     = verbose,
+            linewidth   = linewidth,
         )
     result = bs.run()
     return result if return_raw else result.figure

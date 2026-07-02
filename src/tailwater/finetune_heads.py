@@ -166,9 +166,10 @@ def subspace_projection(
     device,
     save_path: str,
     embed_path: str,
-    graph_output_path: str,
+    graph_output_path: str = None,
     loss_mode: str = "subspace",
     *,
+    hr_npz_path: str = None,
     heads_checkpoint: str = None,
     kgrid_n: int = 4,
     h_mse_weight: float = 0.001,
@@ -226,8 +227,22 @@ def subspace_projection(
     graph_output_path  : path to ONE .pt graph-output file (API-format
                          dict with `edge_pred`, `onsite_pred`, `data`,
                          `LM`, `atoms`). This is the FULL model output
-                         that the projection refines toward.
+                         that the projection refines toward. Provide EITHER
+                         this OR `hr_npz_path` (not both). Optional now that
+                         the sparse `.npz` target is supported.
     loss_mode          : "subspace" (default) | "full" | "eig_only".
+                         Ignored / forced to "eig_only" when `hr_npz_path`
+                         is used (the `.npz` carries eigenvalues, not the
+                         dense target Hamiltonian the H-MSE term needs).
+    hr_npz_path        : (keyword-only) path to the sparse
+                         `wannier90_hr.npz` produced by the optimized API
+                         (the `project=True` bundle under `output_format`
+                         "auto"/"sparse", or any `tw_api_call` "npz" result).
+                         Its in-window eigenvalues become the downfolding
+                         target — the whole `project` workflow then needs
+                         only `embeddings.pt` + the `.npz`, no dense
+                         graph_output.pt / HDF5. Mutually exclusive with
+                         `graph_output_path`.
     heads_checkpoint   : starting HeadsOnly checkpoint (path to a .pth).
                          Defaults to the MACE-compatible `HeadsOnly_MACE.pth`
                          that ships inside the installed package, so you don't
@@ -247,16 +262,28 @@ def subspace_projection(
     # =====================================================
     # LOAD EMBEDDING + GRAPH-OUTPUT PAYLOADS
     # =====================================================
+    # Two mutually-exclusive target sources (validated first — this is an
+    # argument-combination error, independent of whether any file exists):
+    #   * graph_output_path — the dense graph_output.pt (edge_pred/onsite_pred);
+    #     enables the full self-distillation setup (H-MSE + eigenvalue terms).
+    #   * hr_npz_path        — the sparse wannier90_hr.npz from the optimized API
+    #     / project bundle; carries only the Hamiltonian's eigenvalues, so it
+    #     drives the eigenvalue-only downfolding loss.
+    use_npz = hr_npz_path is not None
+    if use_npz and graph_output_path is not None:
+        raise ValueError(
+            "Pass either graph_output_path (dense self-distillation target) or "
+            "hr_npz_path (sparse .npz target), not both.")
+    if not use_npz and graph_output_path is None:
+        raise ValueError(
+            "subspace_projection needs a target: pass graph_output_path "
+            "(dense graph_output.pt) or hr_npz_path (the sparse "
+            "wannier90_hr.npz from the optimized API / project bundle).")
+
     if not os.path.isfile(embed_path):
         raise FileNotFoundError(f"embed_path does not point to a file: {embed_path!r}")
-    if not os.path.isfile(graph_output_path):
-        raise FileNotFoundError(
-            f"graph_output_path does not point to a file: {graph_output_path!r}"
-        )
 
-    embed_pkg = torch.load(embed_path,        map_location="cpu", weights_only=False)
-    gout_pkg  = torch.load(graph_output_path, map_location="cpu", weights_only=False)
-
+    embed_pkg = torch.load(embed_path, map_location="cpu", weights_only=False)
     # The embedding payload is the API's dict-format. We need its `data`
     # (PyG Data with f_out / edge_feat) for the forward pass; LM and
     # atoms are needed for the final TB-model + basis export.
@@ -268,49 +295,87 @@ def subspace_projection(
             f"Got top-level type {type(embed_pkg).__name__}."
         )
     gdata = embed_pkg["data"]
-    LM    = embed_pkg.get("LM",    gout_pkg.get("LM"))
-    atoms = embed_pkg.get("atoms", gout_pkg.get("atoms"))
+    LM    = embed_pkg.get("LM")
+    atoms = embed_pkg.get("atoms")
+
+    if use_npz:
+        # =====================================================
+        # SPARSE .npz TARGET  (eigenvalue-only downfolding)
+        # =====================================================
+        if not os.path.isfile(hr_npz_path):
+            raise FileNotFoundError(
+                f"hr_npz_path does not point to a file: {hr_npz_path!r}")
+        if loss_mode != "eig_only":
+            print(f"[data] hr_npz_path target -> forcing loss_mode='eig_only' "
+                  f"(was {loss_mode!r}); the .npz carries eigenvalues, not the "
+                  f"dense target Hamiltonian the subspace H-MSE term needs).")
+            loss_mode = "eig_only"
+        from .sparse import SparseHR
+        shr = SparseHR.load(hr_npz_path)
+        _kv = _build_kgrid(kgrid_n)
+        # SparseHR.Hk uses e^{+2*pi*i k.R} (tbmodels convention); the predicted
+        # H(k) in Eigenvalue_Only_Loss uses e^{-2*pi*i k.R}. Evaluate the target
+        # spectrum at -k so both reference the same convention at each k-label
+        # (eig(H(k)) generally differs from eig(H(-k)) without inversion).
+        target_full = shr.eigvals_grid((-_kv).numpy())
+        make_eigenvalue_only_data(gdata, _kv.numpy(), list(target_full), e_lo, e_hi)
+        n_in = int(gdata.target_eigs_mask.sum().item())
+        print(f"[data] {os.path.basename(embed_path)}  "
+              f"atoms={gdata.node_features.shape[0]}, "
+              f"edges={gdata.edge_index.shape[1]}")
+        print(f"[data] sparse .npz target: num_wann={shr.num_wann}, "
+              f"{_kv.shape[0]} k-points, {n_in} in-window target eigenvalues "
+              f"(eigenvalue-only downfolding)")
+    else:
+        # =====================================================
+        # DENSE graph_output.pt TARGET  (self-distillation)
+        # =====================================================
+        if not os.path.isfile(graph_output_path):
+            raise FileNotFoundError(
+                f"graph_output_path does not point to a file: {graph_output_path!r}")
+        gout_pkg = torch.load(graph_output_path, map_location="cpu",
+                              weights_only=False)
+        if LM is None:
+            LM = gout_pkg.get("LM")
+        if atoms is None:
+            atoms = gout_pkg.get("atoms")
+        if not (isinstance(gout_pkg, dict)
+                and "edge_pred" in gout_pkg and "onsite_pred" in gout_pkg):
+            raise ValueError(
+                "graph_output_path must point to a dict-format .pt file with "
+                "`edge_pred` and `onsite_pred` keys (the format produced by "
+                "the API's /upload_structure_and_download_graph_output/ "
+                "endpoint)."
+            )
+
+        # Subspace_H_MSE_Loss and Subspace_EigLoss read gdata.edge_targets
+        # to compute both the H MSE term and the FULL target H(k) that the
+        # subspace prediction is compared against. We populate edge_targets
+        # from the API's full graph output, with onsite_pred substituted
+        # into self-loop slots (same convention as build_hr_model).
+        edge_pred_full   = gout_pkg["edge_pred"  ].reshape(gdata.edge_index.shape[1],     18, 18, 2)
+        onsite_pred_full = gout_pkg["onsite_pred"].reshape(gdata.node_features.shape[0], 18, 18, 2)
+
+        is_self_loop = (gdata.edge_vectors.norm(dim=-1) == 0)
+        weights      = torch.sign(torch.abs(gdata.edge_vectors.norm(dim=1))).view(-1, 1, 1, 1)
+        targets_inline = (weights * edge_pred_full).clone()
+        targets_inline[is_self_loop] = onsite_pred_full
+
+        # Subspace losses expect edge_targets shape [num_edges, 1, 18, 18, 2]
+        # (the leading 1 is a legacy K-axis they index with [:, 0, ...]).
+        gdata.edge_targets = targets_inline.unsqueeze(1)
+
+        print(f"[data] {os.path.basename(embed_path)}  "
+              f"atoms={gdata.node_features.shape[0]}, "
+              f"edges={gdata.edge_index.shape[1]}")
+        print(f"[data] graph-output attached as edge_targets "
+              f"(self-distillation downfolding)")
+
     if LM is None or atoms is None:
         raise ValueError(
-            "Could not resolve `LM` and `atoms` from either payload; "
-            "make sure at least one of the two .pt files is API-format "
-            "(contains those keys)."
+            "Could not resolve `LM` and `atoms`; the embeddings-format .pt "
+            "(embed_path) must contain those keys."
         )
-
-    if not (isinstance(gout_pkg, dict)
-            and "edge_pred" in gout_pkg and "onsite_pred" in gout_pkg):
-        raise ValueError(
-            "graph_output_path must point to a dict-format .pt file with "
-            "`edge_pred` and `onsite_pred` keys (the format produced by "
-            "the API's /upload_structure_and_download_graph_output/ "
-            "endpoint)."
-        )
-
-    # =====================================================
-    # ATTACH FULL-MODEL OUTPUT AS edge_targets ON gdata
-    # =====================================================
-    # Subspace_H_MSE_Loss and Subspace_EigLoss read gdata.edge_targets
-    # to compute both the H MSE term and the FULL target H(k) that the
-    # subspace prediction is compared against. We populate edge_targets
-    # from the API's full graph output, with onsite_pred substituted
-    # into self-loop slots (same convention as build_hr_model).
-    edge_pred_full   = gout_pkg["edge_pred"  ].reshape(gdata.edge_index.shape[1],     18, 18, 2)
-    onsite_pred_full = gout_pkg["onsite_pred"].reshape(gdata.node_features.shape[0], 18, 18, 2)
-
-    is_self_loop = (gdata.edge_vectors.norm(dim=-1) == 0)
-    weights      = torch.sign(torch.abs(gdata.edge_vectors.norm(dim=1))).view(-1, 1, 1, 1)
-    targets_inline = (weights * edge_pred_full).clone()
-    targets_inline[is_self_loop] = onsite_pred_full
-
-    # Subspace losses expect edge_targets shape [num_edges, 1, 18, 18, 2]
-    # (the leading 1 is a legacy K-axis they index with [:, 0, ...]).
-    gdata.edge_targets = targets_inline.unsqueeze(1)
-
-    print(f"[data] {os.path.basename(embed_path)}  "
-          f"atoms={gdata.node_features.shape[0]}, "
-          f"edges={gdata.edge_index.shape[1]}")
-    print(f"[data] graph-output attached as edge_targets "
-          f"(self-distillation downfolding)")
 
     # =====================================================
     # LOAD HEADS + SETUP OPTIMIZER
@@ -343,7 +408,7 @@ def subspace_projection(
     # generic k have *physical* spin splittings and pair-averaging would
     # corrupt the target.
     apply_eig_symm = False
-    if symmetrize_targets:
+    if symmetrize_targets and loss_mode == "subspace":
         try:
             from .client import _has_kramers_symmetry  # type: ignore[attr-defined]
         except ImportError:
@@ -542,7 +607,8 @@ def subspace_projection(
             "decay_sigma":        decay_sigma,
             "heads_checkpoint":   os.path.basename(heads_ft_path),
             "source_embedding":   os.path.basename(embed_path),
-            "source_graph_output": os.path.basename(graph_output_path),
+            "source_target":      (os.path.basename(hr_npz_path) if use_npz
+                                   else os.path.basename(graph_output_path)),
         },
     )
 

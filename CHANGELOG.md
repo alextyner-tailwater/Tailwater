@@ -3,6 +3,40 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0]
+
+### Added
+- **Sparse Hamiltonian support (`SparseHR`)** — the optimized inference backend
+  can now return the Hamiltonian as a sparse `wannier90_hr.npz` (COO hops +
+  on-site + optional geometry), which is O(N) in RAM/egress instead of O(N²) and
+  is what makes large systems tractable. `tailwater.SparseHR` loads that `.npz`
+  and exposes `Hk`, `eigvals_grid`, `eigsh_near_fermi`, `hr_dict`, and the
+  converters `to_tbmodels` / `to_hdf5` / `to_hr_dat` / `to_pb` / `to_kwant`
+  (pybinding / Kwant are built straight from the COO, so they never densify).
+- **Format-detecting converters** — top-level `to_pb`, `to_pythtb`, `to_kwant`,
+  `to_hr_dat`, `to_hdf5`, `as_tbmodels` that auto-detect the input
+  (`SparseHR` / `.npz`, or `tbmodels.Model` / `.hdf5` / `_hr.dat`) and dispatch,
+  so the same call works regardless of format:
+  `to_hr_dat("wannier90_hr.npz", "wannier90_hr.dat")`.
+
+### Changed
+- **`tw_api_call` gains `output_format` (`"auto"` | `"sparse"` | `"hdf5"`,
+  default `"auto"`)** and requests the sparse `.npz` from the server. Behaviour:
+  small systems (`< 30` atoms) are auto-converted to `wannier90_hr.hdf5`
+  client-side and returned under `"hdf5"` exactly as before (the `.npz` is kept
+  too, under `"npz"`); large systems stay sparse (returned under `"npz"`) with a
+  printed note on how to convert / analyse them. A server that predates the
+  sparse backend ignores `?format=` and returns HDF5, so `"auto"` degrades
+  cleanly — no client break.
+- **`subspace_projection` accepts `hr_npz_path=`** as an alternative to
+  `graph_output_path`, so `project=True` works from just `embeddings.pt` + the
+  sparse `.npz`: the `.npz` Hamiltonian's in-window eigenvalues drive the
+  eigenvalue-only downfolding loss. `graph_output_path` is now optional (provide
+  exactly one of the two).
+- **Bolder default band lines.** `BandStructure` / `bulk_band_structure` default
+  to `linewidth=1.6` (bands and the solid E_F line), matching the WannierTools
+  gnuplot bulkek convention (`w lp lw 2`). Tunable via `linewidth=`.
+
 ## [0.8.0]
 
 ### Changed
