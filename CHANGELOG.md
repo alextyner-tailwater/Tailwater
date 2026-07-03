@@ -3,6 +3,16 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1]
+
+### Documentation
+- **README updated for the 0.9.0 sparse features** (no code change): documents
+  `tw_api_call(output_format=...)`, a new **Sparse Hamiltonians (`SparseHR`) &
+  format conversion** section covering `as_tbmodels` / `to_hr_dat` / `to_hdf5` /
+  `to_pb` / `to_pythtb` / `to_kwant` (sparse `.npz` → tbmodels / Wannier90
+  `_hr.dat` / pybinding / PythTB / Kwant), the `subspace_projection(hr_npz_path=…)`
+  fine-tune-from-`.npz` path, and the corresponding API-reference entries.
+
 ## [0.9.0]
 
 ### Added
