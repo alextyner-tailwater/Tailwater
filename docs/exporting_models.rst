@@ -41,14 +41,14 @@ Internally the ``.npz`` holds the Hamiltonian as a **COO sparse list of
 hoppings** plus the on-site diagonal and (optionally) the geometry — a
 dense ``[num_wann, num_wann]`` matrix is never formed:
 
-=================  ======================================================
-``on_site``        real on-site energy per orbital, shape ``[num_wann]``
-``rows`` / ``cols``  orbital indices ``i``, ``j`` of each stored hopping
-``Rs``             lattice vector ``R`` per hopping, shape ``[nnz, 3]``
-``vals``           complex hopping amplitude ``H_ij(R)``
-``cell``           3×3 lattice vectors (Å), when geometry was recovered
-``positions``      per-orbital Cartesian positions, when available
-=================  ======================================================
+===================  ======================================================
+``on_site``          real on-site energy per orbital, shape ``[num_wann]``
+``rows``, ``cols``   orbital indices ``i``, ``j`` of each stored hopping
+``Rs``               lattice vector ``R`` per hopping, shape ``[nnz, 3]``
+``vals``             complex hopping amplitude ``H_ij(R)``
+``cell``             3×3 lattice vectors (Å), when geometry was recovered
+``positions``        per-orbital Cartesian positions, when available
+===================  ======================================================
 
 Only the *forward* half of each ``±R`` pair is stored (the Hermitian
 conjugate at ``-R`` is implied) and the ``R = 0`` diagonal lives in
