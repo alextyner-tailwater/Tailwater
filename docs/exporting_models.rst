@@ -1,9 +1,165 @@
-Exporting models: ``_hr.dat``, pybinding, PythTB, and Kwant
-============================================================
+Exporting models: sparse ``.npz``, HDF5, ``_hr.dat``, pybinding, PythTB, Kwant
+==============================================================================
 
-The API returns a tight-binding Hamiltonian as an HDF5 file, which
-:func:`tailwater.tb_model.load` reads into a ``tbmodels.Model``.
-From there you have four common downstream needs:
+By **default the API returns the tight-binding Hamiltonian in sparse
+form** — a ``wannier90_hr.npz`` (a :class:`tailwater.SparseHR`) that
+stores only the non-zero hoppings, so it is O(N) in memory and file size
+rather than O(N²). :func:`tailwater.tw_api_call` handles the two size
+regimes for you:
+
+* **Small systems** (< 30 atoms) — the ``.npz`` is **automatically
+  converted to a dense tbmodels HDF5** on your machine and returned under
+  ``paths["hdf5"]`` (the ``.npz`` is kept too, under ``paths["npz"]``), so
+  every dense recipe on this page — ``tb_model.load("...hdf5")`` onward —
+  works unchanged.
+* **Large systems** — the result stays sparse (``paths["npz"]``), and a
+  note is printed pointing at the conversions here. For big cells you
+  should keep it sparse (see :ref:`why-sparsity`).
+
+Force either format with ``tw_api_call(..., output_format="hdf5")`` or
+``"sparse"``.
+
+Importantly, the conversion functions below accept **either** a sparse
+``.npz`` / :class:`~tailwater.SparseHR` **or** a dense HDF5 /
+``tbmodels.Model``, so the same one-liner works whatever you're holding.
+
+
+The sparse ``.npz`` format (``SparseHR``)
+-----------------------------------------
+
+Load a ``.npz`` with :class:`tailwater.SparseHR`:
+
+.. code-block:: python
+
+    from tailwater import SparseHR
+
+    shr = SparseHR.load("wannier90_hr.npz")
+    shr.num_wann      # number of Wannier orbitals (the H(k) matrix dimension)
+    shr.nnz           # number of stored hoppings
+
+Internally the ``.npz`` holds the Hamiltonian as a **COO sparse list of
+hoppings** plus the on-site diagonal and (optionally) the geometry — a
+dense ``[num_wann, num_wann]`` matrix is never formed:
+
+=================  ======================================================
+``on_site``        real on-site energy per orbital, shape ``[num_wann]``
+``rows`` / ``cols``  orbital indices ``i``, ``j`` of each stored hopping
+``Rs``             lattice vector ``R`` per hopping, shape ``[nnz, 3]``
+``vals``           complex hopping amplitude ``H_ij(R)``
+``cell``           3×3 lattice vectors (Å), when geometry was recovered
+``positions``      per-orbital Cartesian positions, when available
+=================  ======================================================
+
+Only the *forward* half of each ``±R`` pair is stored (the Hermitian
+conjugate at ``-R`` is implied) and the ``R = 0`` diagonal lives in
+``on_site``. That is what makes it O(N): a ``.npz`` for a 14,000-orbital
+moiré cell is a few MB, where the dense HDF5 would be tens of GB.
+
+
+Convert the ``.npz`` to any format (one call, auto-detecting the input)
+-----------------------------------------------------------------------
+
+The top-level converters accept a :class:`~tailwater.SparseHR` / ``.npz``
+path **or** a ``tbmodels.Model`` / ``.hdf5`` / ``_hr.dat`` and dispatch
+automatically:
+
+.. code-block:: python
+
+    from tailwater import (as_tbmodels, to_hdf5, to_hr_dat,
+                           to_pb, to_pythtb, to_kwant)
+
+    npz = "wannier90_hr.npz"
+
+    model      = as_tbmodels(npz)               # tbmodels.Model (dense)
+    to_hdf5(npz,   "wannier90_hr.hdf5")         # tbmodels HDF5
+    to_hr_dat(npz, "wannier90_hr.dat")          # Wannier90 _hr.dat
+    pb_lattice = to_pb(npz)                      # pybinding.Lattice
+    py_model   = to_pythtb(npz)                 # pythtb model
+    syst, lat  = to_kwant(npz)                  # kwant (Builder, lattice)
+
+    # the identical calls work on a dense HDF5 / _hr.dat, too:
+    to_hr_dat("wannier90_hr.hdf5", "wannier90_hr.dat")
+
+``as_tbmodels(npz)`` is the bridge to the rest of this page: once you have
+the ``tbmodels.Model`` (or the auto-converted HDF5 for a small system),
+every pybinding / PythTB / Kwant / WannierBerri recipe below applies.
+
+.. note::
+
+   ``_hr.dat`` and HDF5 are **dense** on-disk formats — size grows as
+   ``num_R · num_wann²``. They are guarded for very large systems; pass
+   ``max_wann=`` to :meth:`SparseHR.to_hr_dat` / :meth:`SparseHR.to_hdf5`
+   to override the guard if you really intend to write a huge file.
+
+
+Staying sparse: pybinding, Kwant, and built-in solvers
+------------------------------------------------------
+
+For large systems you usually do **not** want to densify at all.
+:class:`~tailwater.SparseHR` builds pybinding and Kwant models **straight
+from the COO list** (no dense matrix is ever formed) and carries its own
+sparse solvers:
+
+.. code-block:: python
+
+    from tailwater import SparseHR
+
+    shr = SparseHR.load("wannier90_hr.npz")
+
+    # --- built-in sparse spectra (large num_wann OK) ---
+    Hk = shr.Hk([0.0, 0.0, 0.0])                   # scipy sparse H(k) at Γ
+    w  = shr.eigsh_near_fermi([0, 0, 0], e_fermi=0.0, num=20)  # 20 states near E_F
+    Rd = shr.hr_dict()                             # {R: scipy.sparse.csr_matrix}
+
+    # --- hand the sparse model to pybinding / Kwant (built from the COO) ---
+    pb_lattice = shr.to_pb()                       # pybinding.Lattice
+    syst, lat  = shr.to_kwant()                    # kwant (Builder, lattice)
+
+``eigsh_near_fermi`` uses a shift-invert sparse eigensolver, so you can
+get just the handful of bands nearest the Fermi level for a Hamiltonian
+far larger than a dense ``H(k)`` could hold. ``hr_dict`` returns the
+``H(R)`` blocks as scipy sparse matrices to feed your own KPM /
+Green's-function / transport code. ``to_pb`` and ``to_kwant`` are
+sparse-native and scale to large ``num_wann`` — pybinding and Kwant are
+themselves sparse solvers, so the whole pipeline stays O(N).
+
+
+.. _why-sparsity:
+
+Why maintaining sparsity matters for large systems
+--------------------------------------------------
+
+A **dense** Hamiltonian stores every ``[num_wann, num_wann]`` block for
+every lattice vector ``R``: memory and file size scale as
+**O(num_R · num_wann²)**. But a physical tight-binding Hamiltonian is
+*sparse* — each orbital hops only to a bounded number of neighbours — so
+the number of non-zeros scales just as **O(num_wann)**. For large cells
+the difference is decisive:
+
+* A twisted-bilayer moiré cell with ~14,000 orbitals is a **few MB** as a
+  ``.npz`` but **tens of GB** as a dense ``_hr.dat`` / HDF5 — the dense
+  form often cannot be written, let alone loaded into RAM.
+* Diagonalising a dense ``H(k)`` is O(num_wann³) and needs the entire
+  matrix resident; the sparse shift-invert path
+  (:meth:`SparseHR.eigsh_near_fermi`) touches only the non-zeros and
+  returns just the near-Fermi bands you ask for.
+* pybinding and Kwant are sparse-native, so converting via
+  :meth:`SparseHR.to_pb` / :meth:`SparseHR.to_kwant` keeps memory and
+  compute O(N) end to end.
+
+**Rule of thumb:** for small systems, let ``tw_api_call`` convert to HDF5
+and use the dense recipes below. For large systems, **keep the ``.npz``
+sparse** — write ``_hr.dat`` / HDF5 only if an external tool demands it,
+and prefer the sparse pybinding / Kwant / built-in solvers above.
+
+
+Working with the dense ``tbmodels.Model``
+-----------------------------------------
+
+The sections below operate on a dense ``tbmodels.Model`` — the HDF5 you
+get for a small system (``tb_model.load("wannier90_hr.hdf5")``), or
+``as_tbmodels("wannier90_hr.npz")`` for a converted sparse model. From a
+dense model there are four common downstream needs, each a one-liner:
 
 1. **Write the model to a Wannier90-style** ``_hr.dat`` **file** — so
    it can be consumed by external tools (``Z2Pack``, ``WannierTools``,
@@ -20,8 +176,6 @@ From there you have four common downstream needs:
    Kwant's transport machinery (leads, ``smatrix``, ``greens_function``),
    the wraparound trick for bulk H(k), or any of Kwant's
    sample-builder utilities.
-
-All four are one-liners.
 
 
 Writing an ``_hr.dat`` file
@@ -518,6 +672,35 @@ discrepancy. Both require :command:`pip install pybinding-dev` — see
 
 API reference
 -------------
+
+Sparse Hamiltonian + format-detecting converters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: tailwater.SparseHR
+   :members: load, save, Hk, eigvals_grid, eigsh_near_fermi, hr_dict,
+             to_tbmodels, to_hdf5, to_hr_dat, to_pb, to_kwant
+   :no-index:
+
+.. autofunction:: tailwater.convert.as_tbmodels
+   :no-index:
+
+.. autofunction:: tailwater.convert.to_hdf5
+   :no-index:
+
+.. autofunction:: tailwater.convert.to_hr_dat
+   :no-index:
+
+.. autofunction:: tailwater.convert.to_pb
+   :no-index:
+
+.. autofunction:: tailwater.convert.to_pythtb
+   :no-index:
+
+.. autofunction:: tailwater.convert.to_kwant
+   :no-index:
+
+Dense (tbmodels) converters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. autofunction:: tailwater.client._to_pb_method
    :no-index:

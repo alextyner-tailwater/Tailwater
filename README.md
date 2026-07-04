@@ -1,6 +1,12 @@
 # tailwater
 
+[![PyPI](https://img.shields.io/pypi/v/tailwater)](https://pypi.org/project/tailwater/)
+[![Docs](https://img.shields.io/badge/docs-readthedocs-blue)](https://tailwater.readthedocs.io)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green)](https://github.com/alextyner-tailwater/Tailwater/blob/main/LICENSE)
+
 Client + post-processing toolkit for the **Tailwater** Wannier-Hamiltonian inference API.
+
+**Full documentation:** [tailwater.readthedocs.io](https://tailwater.readthedocs.io) — installation, quick start, exporting models (sparse `.npz` / HDF5 / `_hr.dat` / pybinding / PythTB / Kwant), performance guides, and the complete API reference.
 
 `tailwater` lets you upload a crystal structure to the Tailwater API, receive a tight-binding Hamiltonian, optionally fine-tune the output heads on customer-side targets, and run band-structure / DOS / surface-state analyses locally — all from one pip-installable package.
 
@@ -101,7 +107,7 @@ how the Hamiltonian is transported and delivered:
   30 atoms** are transparently converted back to dense HDF5 (`r["hdf5"]` still
   works, and `r["npz"]` is kept too); larger systems stay sparse under `r["npz"]`,
   with a printed note on how to convert / analyse them.
-- `"sparse"` — always keep the raw `.npz` (a [`SparseHR`](#sparse-hamiltonians-sparsehr--format-conversion)), whatever the size.
+- `"sparse"` — always keep the raw `.npz` (a `SparseHR` — see the **Sparse Hamiltonians** section below, or the [exporting-models guide](https://tailwater.readthedocs.io/en/latest/exporting_models.html)), whatever the size.
 - `"hdf5"` — always deliver dense tbmodels HDF5 (the pre-0.9 behaviour).
 
 A server that predates the sparse backend ignores the flag and returns HDF5, so
@@ -110,24 +116,26 @@ the `.npz`.
 
 Each successful call decrements your server-side credit balance by one. Failures surface as `PermissionError` (401, bad password) or `RuntimeError` (402, out of credits / other 5xx).
 
-### 2. Subspace projection — fine-tune heads on supplier-side embeddings
+### 2. Subspace projection — fine-tune the heads near the Fermi level
 
-Once you have the project bundle, you can fine-tune the output heads to fit a narrow energy window near the Fermi level:
+From the `project=True` bundle (`embeddings.pt` + `wannier90_hr.npz`) you can
+fine-tune the output heads to reproduce the Hamiltonian's eigenvalues inside a
+narrow energy window — a compact, downfolded model for that window. It runs
+entirely on the artifacts the API returned:
 
 ```python
 from tailwater import subspace_projection
 
 subspace_projection(
-    start_lr          = 5e-5,
-    end_lr            = 5e-7,
-    num_epochs        = 20,
-    energy_range      = (-2.0, 2.0),       # eV, relative to E_F
-    decay_sigma       = 1.0,
-    device            = "cpu",
-    save_path         = "./projection_out",
-    embed_path        = paths["embeddings"],
-    graph_output_path = paths["graph_output"],
-    loss_mode         = "subspace",         # default
+    start_lr     = 1e-4,
+    end_lr       = 1e-5,
+    num_epochs   = 20,
+    energy_range = (-2.0, 2.0),      # eV, relative to E_F
+    decay_sigma  = 0.5,
+    device       = "cpu",
+    save_path    = "./projection_out",
+    embed_path   = paths["embeddings"],
+    hr_npz_path  = paths["npz"],     # the sparse Hamiltonian is the fit target
 )
 ```
 
@@ -139,31 +147,9 @@ Per epoch the script prints the mean eigenvalue loss. When done, three files are
 | `{stem}_pred.hdf5` | projected, subspace-restricted `tbmodels.Model` |
 | `{stem}.basis.json` | mapping from subspace indices to `(atom, spatial, spin)` labels |
 
-Three loss modes are exposed:
-- `"subspace"` (default) — H-MSE + weighted eigenvalue loss within the energy window
-- `"eig_only"` — eigenvalue-only fine-tune; no Hamiltonian targets needed
-- `"full"` — plain H-MSE across all orbitals
-
-**Fine-tuning from the sparse `.npz`.** If you took the sparse output
-(`output_format="sparse"`, or a large-system `project=True` bundle), pass the
-`.npz` as **`hr_npz_path`** instead of `graph_output_path`. The projection then
-fits the heads to the **in-window eigenvalues of the sparse Hamiltonian**
-(eigenvalue-only downfolding), so the whole workflow needs only `embeddings.pt`
-+ the `.npz` — no dense `graph_output.pt` / HDF5:
-
-```python
-subspace_projection(
-    start_lr=1e-4, end_lr=1e-5, num_epochs=20,
-    energy_range=(-2.0, 2.0), decay_sigma=0.5, device="cpu",
-    save_path="./projection_out",
-    embed_path  = paths["embeddings"],
-    hr_npz_path = paths["npz"],          # sparse target (instead of graph_output_path)
-)
-```
-
-Provide **exactly one** of `graph_output_path` (dense self-distillation target)
-or `hr_npz_path` (sparse target); with `hr_npz_path` the loss mode is forced to
-`"eig_only"`.
+**Bring your own targets.** To fit your own band structure instead of the API's
+prediction, pass your own DFT eigenvalues via `make_eigenvalue_only_data`, or
+supply your own Hamiltonian as a SparseHR `.npz` through `hr_npz_path`.
 
 ### 3. Post-processing — bulk DOS, surface states, Fermi arcs
 
@@ -331,11 +317,11 @@ CovariantEdgeHead(irreps_in)
 load_heads_only_checkpoint(path)
 save_heads_only_checkpoint(full_state_dict, irreps_in_str, save_path)
 
-# Subspace fine-tuning  (give ONE of graph_output_path / hr_npz_path)
-subspace_projection(start_lr, end_lr, num_epochs, energy_range,
-                    decay_sigma, device, save_path, embed_path,
-                    graph_output_path=None, loss_mode="subspace",
-                    *, hr_npz_path=None)     # hr_npz_path = fine-tune from the sparse .npz
+# Subspace fine-tuning — fit the heads to the project bundle's Hamiltonian
+subspace_projection(start_lr, end_lr, num_epochs, energy_range, decay_sigma,
+                    device, save_path, embed_path, *, hr_npz_path=...)
+                    # advanced: a dense graph_output_path=... target instead of
+                    #   hr_npz_path enables the "subspace" / "full" loss modes
 
 # Subspace losses (advanced)
 Subspace_H_MSE_Loss(gdata, edge_pred, onsite_pred, e_lo, e_hi)
@@ -388,12 +374,12 @@ paths = tw_api_call(
 
 # 2. Fine-tune the heads to fit a near-Fermi window
 subspace_projection(
-    start_lr=5e-5, end_lr=5e-7, num_epochs=20,
-    energy_range=(-2.0, 2.0), decay_sigma=1.0,
+    start_lr=1e-4, end_lr=1e-5, num_epochs=20,
+    energy_range=(-2.0, 2.0), decay_sigma=0.5,
     device="cpu",
     save_path="./out_subspace",
     embed_path=paths["embeddings"],
-    graph_output_path=paths["graph_output"],
+    hr_npz_path=paths["npz"],
 )
 
 # 3. Run surface-GF analysis on the projected hr-model
@@ -407,7 +393,7 @@ result = SurfaceGreensFunction(
 result.figure_top.savefig("surface_top.png")
 ```
 
-See `examples/` for runnable scripts covering each layer in isolation.
+See [`examples/`](https://github.com/alextyner-tailwater/Tailwater/tree/main/examples) for runnable scripts covering each layer in isolation, and [`Tutorials/`](https://github.com/alextyner-tailwater/Tailwater/tree/main/Tutorials) for worked Colab notebooks.
 
 ---
 

@@ -6,12 +6,13 @@ Three workflow layers:
         from tailwater import tw_api_call
         paths = tw_api_call(structure, user, password, "./out", "mat", project=True)
 
-2. SUBSPACE PROJECTION — fine-tune the output heads on supplier-provided
-   embeddings to project predictions into a near-Fermi energy window
+2. SUBSPACE PROJECTION — fine-tune the output heads to reproduce the
+   Hamiltonian's eigenvalues in a near-Fermi energy window (a compact,
+   downfolded model), using the project bundle's embeddings.pt + .npz
         from tailwater import subspace_projection
         subspace_projection(start_lr, end_lr, num_epochs, energy_range,
                             decay_sigma, device, save_path,
-                            embed_path, graph_output_path)
+                            embed_path, hr_npz_path=...)
 
 3. POST-PROCESSING — load the HDF5 tight-binding model and run bulk DOS,
    surface spectral density, surface Greens-function (Lopez-Sancho),
@@ -45,7 +46,7 @@ checkpoint (HeadsOnly.pth) and HDF5 / .pt artifacts produced by the
 API are needed.
 """
 
-__version__ = "0.9.1"
+__version__ = "0.9.2"
 
 # ---- HTTP client + HDF5 loader ----
 from .client import (

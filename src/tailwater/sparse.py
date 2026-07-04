@@ -165,8 +165,17 @@ class SparseHR:
         import tbmodels
         if uc is None:
             uc = self.cell
+        # Carry the per-orbital positions through (same convention as the dense
+        # build_hr_model_fast path), so as_tbmodels(npz) is faithful to
+        # tb_model.load(hdf5) — including position-dependent quantities like
+        # WannierBerri's Berry curvature. Fall back to the origin if geometry
+        # wasn't recovered (eigenvalues are position-independent either way).
+        if self.positions is not None and len(self.positions) == self.num_wann:
+            pos = [[float(c) for c in p] for p in self.positions]
+        else:
+            pos = [[0.0, 0.0, 0.0]] * self.num_wann
         m = tbmodels.Model(on_site=[float(x) for x in self.on_site], dim=3, occ=1,
-                           pos=[[0.0, 0.0, 0.0]] * self.num_wann, uc=uc)
+                           pos=pos, uc=uc)
         for i, j, R, v in zip(self.rows.tolist(), self.cols.tolist(),
                               self.Rs.tolist(), self.vals.tolist()):
             if R == [0, 0, 0] and i == j:

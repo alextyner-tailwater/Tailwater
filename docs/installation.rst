@@ -46,20 +46,25 @@ by default. Install with the bracket syntax:
      - ``pytest``, ``ruff``, ``build``, ``twine``
      - You're working on ``tailwater`` itself.
 
-pybinding (separate package, not an extra)
--------------------------------------------
+Tight-binding-library converters (separate packages)
+----------------------------------------------------
 
-If you want to use ``subspace_projection`` (which writes a projected
-hr-model HDF5 after fine-tuning) or ``tb_model.load(...).to_pb()``,
-install ``pybinding-dev`` directly — it is **not** a ``tailwater`` extra,
-just a regular PyPI package:
+The converters to other tight-binding libraries — ``to_pb`` /
+``tb_model.load(...).to_pb()`` (and ``subspace_projection``, which writes
+a projected HDF5 via pybinding), ``to_pythtb``, and ``to_kwant`` — each
+need their target package. They are imported lazily, so the base install
+stays light; install the one(s) you need:
 
 .. code-block:: bash
 
-    pip install pybinding-dev
+    pip install pybinding-dev              # pybinding  (not a tailwater extra)
+    pip install pythtb                     # PythTB
+    conda install -c conda-forge kwant     # Kwant
 
-Calling those features without it installed raises a clear ``ImportError``
-that points you back at this command.
+``as_tbmodels`` / ``to_hr_dat`` / ``to_hdf5`` need only ``tbmodels``,
+which is a core dependency (installed automatically). Calling a converter
+without its package installed raises a clear ``ImportError`` pointing back
+here.
 
 Supported Python
 ----------------

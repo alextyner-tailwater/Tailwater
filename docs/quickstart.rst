@@ -15,7 +15,8 @@ the result.
 1. Get the artifacts from the API
 ---------------------------------
 
-``project=True`` returns all four bundle artifacts in one credit-billed call:
+``project=True`` returns the artifacts you need for fine-tuning and
+analysis in one credit-billed call:
 
 .. code-block:: python
 
@@ -31,8 +32,10 @@ the result.
         filename    = "my_material",
         project     = True,
     )
-    # paths = {"hdf5": "...", "embeddings": "...",
-    #          "graph_output": "...", "win": "..."}
+    # paths = {"embeddings": "...", "npz": "...", "win": "..."}
+    #   The Hamiltonian comes back as a sparse SparseHR (wannier90_hr.npz).
+    #   For small systems (< 30 atoms) it is also auto-converted to a dense
+    #   HDF5, added under paths["hdf5"] — see :doc:`exporting_models`.
 
 The returned dict always contains a ``"win"`` key — the parsed
 ``wannier90.win`` file the server actually ran inference on, useful
@@ -42,25 +45,28 @@ runs.
 2. (Optional) Fine-tune the heads to fit a near-Fermi window
 ------------------------------------------------------------
 
+Fit the output heads to the predicted Hamiltonian's eigenvalues inside a
+narrow energy window (a compact, downfolded model), using the bundle's
+``embeddings.pt`` + sparse ``wannier90_hr.npz``:
+
 .. code-block:: python
 
     from tailwater import subspace_projection
 
     subspace_projection(
-        start_lr          = 5e-5,
-        end_lr            = 5e-7,
-        num_epochs        = 20,
-        energy_range      = (-2.0, 2.0),       # eV, relative to E_F
-        decay_sigma       = 1.0,
-        device            = "cpu",
-        save_path         = "./projection_out",
-        embed_path        = paths["embeddings"],
-        graph_output_path = paths["graph_output"],
-        loss_mode         = "subspace",         # default
+        start_lr     = 1e-4,
+        end_lr       = 1e-5,
+        num_epochs   = 20,
+        energy_range = (-2.0, 2.0),       # eV, relative to E_F
+        decay_sigma  = 0.5,
+        device       = "cpu",
+        save_path    = "./projection_out",
+        embed_path   = paths["embeddings"],
+        hr_npz_path  = paths["npz"],      # fit the heads to the sparse Hamiltonian
     )
 
 After training, ``./projection_out/`` contains a fine-tuned heads
-checkpoint, a projected (subspace-restricted) ``_hr.dat``, and a
+checkpoint, a projected (subspace-restricted) HDF5 model, and a
 ``.basis.json`` describing the orbital basis of the projection.
 
 3. Analyze the model
@@ -74,11 +80,11 @@ natural reference — see :doc:`fermi_alignment` for the full guide.
 
     import numpy as np
     from tailwater import (
-        tb_model, align_to_vbm,
+        as_tbmodels, align_to_vbm,
         SurfaceGreensFunction, BulkDOS, bulk_band_structure,
     )
 
-    model = tb_model.load(paths["hdf5"])
+    model = as_tbmodels(paths["npz"])  # dense tbmodels.Model from the sparse .npz
     model = align_to_vbm(model)        # (optional, for non-metals) VBM -> 0
 
     # Bulk DOS (KPM, k-mesh averaged)

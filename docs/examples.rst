@@ -11,11 +11,12 @@ is self-contained and operates on artifacts produced by the API.
    * - File
      - What it does
    * - ``examples/01_basic_api_call.py``
-     - Default mode: upload a pymatgen ``Structure``, download a
-       tbmodels HDF5 hr-model + parsed ``.win``.
+     - Default mode: upload a pymatgen ``Structure``, download the sparse
+       ``wannier90_hr.npz`` (small systems also get a dense HDF5) +
+       parsed ``.win``.
    * - ``examples/02_subspace_projection.py``
-     - One ``project=True`` API call → ``subspace_projection`` →
-       projected ``_hr.dat`` + basis JSON.
+     - One ``project=True`` API call (embeddings + sparse ``.npz``) →
+       ``subspace_projection(hr_npz_path=...)`` → projected HDF5 + basis JSON.
    * - ``examples/03_surface_analysis.py``
      - ``BulkDOS`` / ``SurfaceSpectralDensity`` / ``SurfaceGreensFunction`` /
        ``FermiArcMap`` on the HDF5 hr-model.

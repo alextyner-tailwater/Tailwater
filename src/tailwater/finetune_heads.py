@@ -2,62 +2,43 @@
 
 This module exposes a single function — `subspace_projection` — that
 performs the end-to-end fine-tune + subspace export workflow on a
-SINGLE material described by two .pt files from the API:
+SINGLE material, using two artifacts from one `project=True` API call:
 
-  * `embed_path`        — the API's
-                          /upload_structure_and_download_embeddings/ output
-                          (PyG Data with f_out / edge_feat + structural
-                          metadata).
-  * `graph_output_path` — the API's
-                          /upload_structure_and_download_graph_output/ output
-                          (dense edge_pred / onsite_pred = full predicted
-                          Hamiltonian + structural metadata).
-
-The graph-output predictions are attached to the embedding's gdata as
-`edge_targets` so the subspace H MSE / eigenvalue losses have a target
-to fit against. This is the self-distillation downfolding setup: the
-trained model predicts a full Hamiltonian, and the heads are refined so
-the SUBSPACE-restricted Hamiltonian reproduces the in-window eigenvalues
-of that full Hamiltonian as accurately as possible.
+  * `embed_path`  — the API's embeddings.pt (PyG Data with f_out /
+                    edge_feat + structural metadata).
+  * `hr_npz_path` — the API's wannier90_hr.npz: the predicted
+                    Hamiltonian as a sparse `SparseHR`. Its in-window
+                    eigenvalues are the target the heads are refined to
+                    reproduce (eigenvalue-only downfolding), so the heads
+                    learn a compact Hamiltonian for the chosen energy
+                    window.
 
 Use it from another script as:
 
-    from finetune_heads import subspace_projection
+    from tailwater import subspace_projection
     subspace_projection(
-        start_lr          = 5e-5,
-        end_lr            = 5e-7,
-        num_epochs        = 20,
-        energy_range      = (-2.0, 2.0),
-        decay_sigma       = 1.0,
-        device            = "cpu",
-        save_path         = "./customer_finetune_out",
-        embed_path        = "./customer_package/embeddings.pt",
-        graph_output_path = "./customer_package/graph_output.pt",
-        loss_mode         = "subspace",     # default
+        start_lr     = 1e-4,
+        end_lr       = 1e-5,
+        num_epochs   = 20,
+        energy_range = (-2.0, 2.0),   # eV, relative to E_F
+        decay_sigma  = 0.5,
+        device       = "cpu",
+        save_path    = "./finetune_out",
+        embed_path   = "./package/embeddings.pt",
+        hr_npz_path  = "./package/wannier90_hr.npz",
     )
 
-The supplier's backbone is NEVER imported, loaded, or required at any
-point. Fine-tuning runs the heads on pre-computed embeddings against
-the supplier-provided target Hamiltonians (or, if the customer has
-their own Hamiltonians keyed by material id, they can substitute those
-— see the "Bring-Your-Own-Targets" note at the bottom of this file).
+Loss modes
+----------
+With `hr_npz_path`, `loss_mode` is "eig_only": the heads are fit to the
+predicted Hamiltonian's eigenvalues that fall in the energy window. You
+can also bring your OWN eigenvalue targets (e.g. DFT band-structure
+data) for the same mode — see `subspace_utils.make_eigenvalue_only_data`.
 
-Three loss modes
-----------------
-"full"     : standard H MSE loss across all orbitals. Requires target
-             Hamiltonians on each Data object (gdata.edge_targets).
-"subspace" : energy-windowed subspace fine-tuning (see
-             finetune_subspace.py). Requires target Hamiltonians and
-             trains the heads to fit eigenvalues that lie in
-             [E_LO, E_HI] of the full target spectrum.
-"eig_only" : eigenvalue-only fine-tuning. The customer provides
-             target eigenvalues at custom k-points; no target
-             Hamiltonian is needed. Each material's Data object must
-             carry attributes gdata.kpts, gdata.target_eigs,
-             gdata.target_eigs_mask (use
-             subspace_utils.make_eigenvalue_only_data to attach them).
-             The number of valid target eigenvalues at each k defines
-             the effective subspace size at that k.
+Advanced: a dense target Hamiltonian may be supplied instead of the
+`.npz`, as `graph_output_path` (the API's graph_output.pt), which
+additionally enables the H-MSE-based "subspace" and "full" loss modes.
+Provide exactly one of `hr_npz_path` or `graph_output_path`.
 
 Per-epoch the function prints the mean per-material eigenvalue loss
 (for "subspace" / "eig_only" modes). For "full" mode it prints the
@@ -654,20 +635,12 @@ if __name__ == "__main__":
     )
 
 
-# -------- Bring-Your-Own-Targets note --------
+# -------- Bring your own targets --------
 #
-# If a customer has their own DFT/Wannier targets (e.g. they re-ran a
-# Wannier90 step with different disentanglement windows), they can swap
-# in their targets at training time without re-running the backbone:
-#
-#   pkg = torch.load("./embeddings.pt", weights_only=False)
-#   gdata = pkg["data"]
-#   gdata.edge_targets = lookup_my_targets(gdata.idn)   # [E, 1, 18, 18, 2]
-#   torch.save(pkg, "./embeddings.pt")
-#
-# As long as the (edge_index, inv_data) topology matches the original
-# extraction, subspace_projection() will fine-tune against the
-# customer's targets using the same supplier-provided embeddings.
+# To fit your OWN Hamiltonian instead of the API's prediction, save it as
+# a wannier90_hr.npz in the SparseHR format and pass it as `hr_npz_path`.
+# To fit your own DFT band-structure eigenvalues directly (no Hamiltonian
+# needed), use loss_mode="eig_only" with make_eigenvalue_only_data, below.
 #
 # -------- Eigenvalue-only mode --------
 #

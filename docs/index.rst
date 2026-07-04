@@ -24,13 +24,14 @@ Three workflow layers
    * - Layer
      - What you get
    * - :doc:`HTTP client <api/client>`
-     - ``tw_api_call`` / ``tb_model`` — upload a pymatgen ``Structure``
-       and receive an HDF5 tight-binding model + parsed ``.win`` file,
-       or any of the intermediate inference artifacts.
+     - ``tw_api_call`` / ``SparseHR`` / ``tb_model`` — upload a pymatgen
+       ``Structure`` and receive the tight-binding model (a sparse
+       ``.npz`` by default; small systems auto-converted to HDF5) +
+       parsed ``.win`` file, or any intermediate inference artifact.
    * - :doc:`Subspace projection <api/finetune_heads>`
-     - ``subspace_projection`` — fine-tune the output heads on
-       supplier-provided embeddings to project predictions into a
-       narrow near-Fermi energy window.
+     - ``subspace_projection`` — fine-tune the output heads to reproduce
+       the predicted Hamiltonian's eigenvalues in a narrow near-Fermi
+       window (a compact, downfolded model).
    * - :doc:`Post-processing <api/wannier_wizard>`
      - ``BulkDOS`` / ``SurfaceGreensFunction`` / ``FermiArcMap`` /
        ``BandStructure`` — band-structure, DOS, surface-state, and
@@ -48,29 +49,29 @@ Quick start
 .. code-block:: python
 
     from pymatgen.core import Structure
-    from tailwater import tw_api_call, subspace_projection, tb_model, SurfaceGreensFunction
+    from tailwater import tw_api_call, subspace_projection, as_tbmodels, SurfaceGreensFunction
 
     structure = Structure.from_file("MyMaterial.cif")
 
-    # 1) One API call, one credit — receive every artifact for downstream work
+    # 1) One API call, one credit — embeddings.pt + sparse wannier90_hr.npz
     paths = tw_api_call(structure, "user", "pw", "./outputs", "my_mat",
                         project=True)
 
-    # 2) Fine-tune heads + project to [-2, 2] eV around E_F
+    # 2) Fine-tune heads to the Hamiltonian's eigenvalues in [-2, 2] eV of E_F
     subspace_projection(
-        start_lr=5e-5, end_lr=5e-7, num_epochs=20,
-        energy_range=(-2.0, 2.0), decay_sigma=1.0,
+        start_lr=1e-4, end_lr=1e-5, num_epochs=20,
+        energy_range=(-2.0, 2.0), decay_sigma=0.5,
         device="cpu",
         save_path="./projection_out",
         embed_path=paths["embeddings"],
-        graph_output_path=paths["graph_output"],
+        hr_npz_path=paths["npz"],
     )
 
     # 3) Surface Green's function (Lopez-Sancho).
     #    n_jobs=-1 fans the k-points across every CPU core for a 3-10x
     #    speedup; see :doc:`performance` for the full story.
     import numpy as np
-    model  = tb_model.load(paths["hdf5"])
+    model  = as_tbmodels(paths["npz"])   # dense tbmodels.Model from the sparse .npz
     result = SurfaceGreensFunction(
         model, surface=np.eye(3),
         energies=np.linspace(-1, 1, 201),

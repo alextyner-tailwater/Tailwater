@@ -3,6 +3,44 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2]
+
+### Fixed
+- **PyPI project links pointed at a nonexistent GitHub org** (`tailwater/tailwater`,
+  a 404). Homepage/Issues now point at the real repo
+  (`alextyner-tailwater/Tailwater`) and Documentation at the live manual,
+  https://tailwater.readthedocs.io — which the README now also links prominently
+  (plus PyPI/docs/license badges).
+- **`Tutorials/Basics.ipynb` and `Tutorials/Surface_States.ipynb`** called
+  `subspace_projection(..., graph_output_path=...)`, which no longer matches the
+  `project=True` bundle (embeddings + sparse `.npz`) — running them against the
+  current API raised a `KeyError`. Both now fine-tune from the `.npz`
+  (`hr_npz_path`).
+- **`SparseHR.to_tbmodels` (and hence `as_tbmodels` / `to_hdf5` / `to_hr_dat`)
+  now carries the per-orbital positions through** instead of zeroing them, so a
+  `tbmodels.Model` built from a sparse `.npz` is faithful to the one loaded from
+  the dense HDF5 — including position-dependent quantities (e.g. WannierBerri
+  Berry curvature). Eigenvalues/DOS/bands are unaffected (position-independent).
+
+### Documentation
+- **ReadTheDocs "Exporting models" page rewritten** to lead with the sparse
+  `.npz` default: the `SparseHR` format, the format-detecting converters
+  (`as_tbmodels`/`to_hdf5`/`to_hr_dat`/`to_pb`/`to_pythtb`/`to_kwant`, npz **or**
+  hdf5 in), staying-sparse recipes (`Hk`/`eigsh_near_fermi`/`hr_dict`/`to_pb`/
+  `to_kwant` from the COO), and why sparsity matters for large systems. Front-page
+  + quickstart + installation + examples updated for the sparse default and npz
+  fine-tuning; examples `01`/`02` refreshed.
+- **Fine-tuning docs now lead with the sparse `.npz` (`hr_npz_path`)** — the
+  `project=True` bundle returns `embeddings.pt` + `wannier90_hr.npz`, so
+  `subspace_projection` is documented as fitting the heads to that Hamiltonian's
+  in-window eigenvalues. `graph_output_path` is demoted to a one-line "advanced /
+  dense-target" note (still functional in code for the `"subspace"`/`"full"`
+  modes). Removed development-oriented wording from the fine-tuning docstrings
+  (the "supplier's backbone is NEVER imported…" passage and the dense
+  `edge_targets`-swapping "Bring-Your-Own-Targets" note) in favour of a concise
+  customer-facing "bring your own targets" pointer (`make_eigenvalue_only_data`
+  or your own SparseHR `.npz`). No code/behaviour change.
+
 ## [0.9.1]
 
 ### Documentation
