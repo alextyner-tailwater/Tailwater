@@ -3,6 +3,19 @@
 All notable changes to the `tailwater` package. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3]
+
+### Added
+- **Multi-material fine-tuning accepts the sparse `.npz` as a target Hamiltonian.**
+  `prepare_finetune_target` now takes a `wannier90_hr.npz` path (or an in-memory
+  `SparseHR`) in addition to `_hr.dat` / `.hdf5` / `tbmodels.Model`, densifying via
+  `SparseHR.to_tbmodels()`. `prepare_finetune_targets_from_directory` globs
+  `*_hr.npz` / `*.npz` (tried after `_hr.dat` / HDF5, so an explicit dense target
+  still wins). The `.npz` target is bit-identical to the dense-HDF5 target
+  (verified `max|Δ edge_targets| = 0`). `Tutorials/MultiMaterial_Finetune.ipynb`
+  gains a self-contained npz appendix (builds a mini train/val set from the API,
+  no external dataset) and its intro documents the npz target option.
+
 ## [0.9.2]
 
 ### Fixed

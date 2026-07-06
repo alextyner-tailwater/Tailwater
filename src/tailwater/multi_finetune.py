@@ -15,8 +15,9 @@ For each material in the user's set:
 1. The user calls the API once to get the backbone embedding
    (``embed_path``, the ``.pt`` produced by
    ``/upload_structure_and_download_embeddings/``).
-2. The user has their own Wannier Hamiltonian — an ``_hr.dat`` or
-   ``_hr.hdf5`` file — and knows which spatial orbitals were
+2. The user has a target Wannier Hamiltonian — a sparse
+   ``wannier90_hr.npz`` (the API's default output), an ``_hr.dat``, or
+   an ``_hr.hdf5`` file — and knows which spatial orbitals were
    projected per atom (e.g. ``[["s", "pz", "px", "py"]]`` for an
    atom with only s+p orbitals, vs. the full
    ``[["s", "pz", "px", "py", "dz2", "dxz", "dyz", "dx2-y2", "dxy"]]``
@@ -651,10 +652,13 @@ def prepare_finetune_target(
     ----
     embed_path : str
         Path to the embedding ``.pt`` from the API.
-    hr_path_or_model : str | tbmodels.Model
-        The user's Wannier Hamiltonian — either a path readable by
-        ``tbmodels.Model.from_hdf5_file`` / ``from_hr_file`` (chosen
-        by extension), or an already-loaded ``tbmodels.Model``.
+    hr_path_or_model : str | tbmodels.Model | SparseHR
+        The target Wannier Hamiltonian, as any of: a sparse
+        ``wannier90_hr.npz`` path (the Tailwater API's default output, a
+        :class:`~tailwater.SparseHR`), a ``.hdf5`` path, a Wannier90
+        ``_hr.dat`` path, an in-memory :class:`~tailwater.SparseHR`, or an
+        already-loaded ``tbmodels.Model``. The format is chosen by
+        extension; ``.npz`` is densified via ``SparseHR.to_tbmodels()``.
     win_path : str, optional
         Path to the matching ``.win`` file. When supplied,
         ``active_orbitals`` is derived from it automatically via
@@ -704,11 +708,20 @@ def prepare_finetune_target(
     gdata = embed_pkg["data"]
 
     # Resolve the hr-model
-    if isinstance(hr_path_or_model, str):
+    from .sparse import SparseHR
+    if isinstance(hr_path_or_model, SparseHR):
+        # Sparse Tailwater Hamiltonian passed in memory — densify for
+        # target extraction.
+        hr_model = hr_path_or_model.to_tbmodels()
+    elif isinstance(hr_path_or_model, str):
         path = hr_path_or_model
         if not os.path.isfile(path):
             raise FileNotFoundError(f"hr file does not exist: {path!r}")
-        if path.lower().endswith((".hdf5", ".h5")):
+        if path.lower().endswith(".npz"):
+            # Sparse Tailwater output (wannier90_hr.npz, a SparseHR) —
+            # densify to a tbmodels.Model for target extraction.
+            hr_model = SparseHR.load(path).to_tbmodels()
+        elif path.lower().endswith((".hdf5", ".h5")):
             hr_model = tbmodels.Model.from_hdf5_file(path)
         else:
             # Wannier90 *_hr.dat — tbmodels exposes this via
@@ -850,7 +863,8 @@ def prepare_finetune_targets_from_directory(
     # so when both are present we want the user's. Glob patterns are
     # tried in order — exact name `wannier90.win` first, then any .win.
     win_patterns:   Sequence[str] = ("wannier90.win", "*.win"),
-    hr_patterns:    Sequence[str] = ("*_hr.dat", "*_hr.hdf5", "*_hr.h5"),
+    hr_patterns:    Sequence[str] = ("*_hr.dat", "*_hr.hdf5", "*_hr.h5",
+                                     "*_hr.npz", "*.npz"),
     out_dir:        Optional[str] = None,
     fermi_shift:    Optional[float] = None,
     strict:         bool  = False,
@@ -870,7 +884,7 @@ def prepare_finetune_targets_from_directory(
         ├── Bi2Se3/
         │   ├── embeddings.pt      <- from `/upload_structure_and_download_embeddings/`
         │   ├── wannier90.win      <- the user's
-        │   └── wannier90_hr.dat   <- the user's (or `_hr.hdf5`)
+        │   └── wannier90_hr.npz   <- target H (sparse .npz, or `_hr.dat` / `_hr.hdf5`)
         ├── Bi2Te3/
         │   ├── embeddings.pt
         │   ├── wannier90.win
@@ -899,10 +913,12 @@ def prepare_finetune_targets_from_directory(
     win_patterns : sequence of str, default ``("*.win",)``
         Glob patterns for the Wannier90 .win file.
     hr_patterns : sequence of str, default ``("*_hr.dat", "*_hr.hdf5",
-                  "*_hr.h5")``
-        Glob patterns for the Wannier hr-model file. ``.dat`` is tried
-        before HDF5; either is read transparently by
-        ``tbmodels.Model``.
+                  "*_hr.h5", "*_hr.npz", "*.npz")``
+        Glob patterns for the target hr-model file, tried in order.
+        ``_hr.dat`` / HDF5 are read by ``tbmodels.Model``; the Tailwater
+        sparse ``.npz`` (a :class:`~tailwater.SparseHR`) is densified via
+        ``SparseHR.to_tbmodels()``. Explicit ``_hr.dat`` / HDF5 win over a
+        ``.npz`` in the same directory (npz patterns are tried last).
     out_dir : str, optional
         If given, each prepared item is also saved as
         ``out_dir/{name}_target.pt`` for reuse on subsequent runs.
